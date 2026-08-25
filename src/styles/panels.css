@@ -222,3 +222,13 @@ h1 small {
   color: var(--parch-dim);
   padding: 8px 4px;
 }
+
+/* Which build you are actually running. Small, but it is the difference
+   between "my change did not work" and "my browser is showing me last week". */
+.build {
+  margin: 9px 0 0;
+  font-size: 9px;
+  letter-spacing: 0.1em;
+  color: rgba(169, 155, 124, 0.55);
+  font-variant-numeric: tabular-nums;
+}

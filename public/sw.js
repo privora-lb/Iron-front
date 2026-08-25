@@ -6,7 +6,7 @@
 // asset is cache-first (their names change when their contents do, so a cached
 // copy is never stale). Bump VERSION to evict everything.
 // =============================================================================
-const VERSION = 'iron-front-v1';
+const VERSION = 'iron-front-v2'; // bumped: evicts every cache from an older build
 const SHELL = `${VERSION}-shell`;
 const ASSETS = `${VERSION}-assets`;
 

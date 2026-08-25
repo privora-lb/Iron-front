@@ -4,6 +4,8 @@ import { defineConfig } from 'vite';
 // test/. Kept separate from vite.config.js so the shipped web build is never
 // shaped by a testing constraint.
 export default defineConfig({
+  // Harness builds are never shipped, so they say so rather than carrying a SHA.
+  define: { __BUILD__: JSON.stringify('harness') },
   build: {
     outDir: 'dist-test',
     emptyOutDir: true,

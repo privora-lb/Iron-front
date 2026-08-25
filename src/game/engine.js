@@ -2037,6 +2037,25 @@ function stepSquad(sq,dt){
   AIRMOVE=!!t.air;                                   // aircraft need no crossings
   let tx=null,ty=null,sp=t.speed,stopAt=0;
 
+  // A formation anchor inside a building is the squad-level twin of a body
+  // inside one. stepSquad only ever tests where the anchor is GOING, so once it
+  // is in there every direction is blocked, the whole unit freezes, and its men
+  // go on dressing their formation around a point that will never move again.
+  // That is what "stuck near the base" actually was: the men were free, the
+  // anchor was not. Walk it out, whatever the orders say.
+  if(!t.air){
+    const afoot=!t.vehicle&&t.kind!=='siege';
+    if(blockedFor(sq.fx,sq.fy,afoot,sq.team)){
+      const p=freeSpot(sq.fx,sq.fy,afoot,sq.team);
+      const ax=p.x-sq.fx,ay=p.y-sq.fy,ad=Math.hypot(ax,ay);
+      if(ad>.01){
+        const st=Math.min(ad,110*dt+1.2);        // shoulder out, do not teleport
+        sq.fx+=ax/ad*st; sq.fy+=ay/ad*st;
+        sq.stuck=0;
+      }
+    }
+  }
+
   if(sq.routed){
     tx=homeX; ty=sq.fy; sp=t.speed*1.35;
     if(sq.team==='blue'?sq.fx<-40:sq.fx>W+40){ sq.gone=true;
@@ -2844,7 +2863,9 @@ function safeSpot(team,x,y){
     const nx=team==='blue'?rnd(80,W*.42):rnd(W*.58,W-80),ny=clamp(y+rnd(-160,160),70,H-70);
     if(inZone(team,nx,ny)) return {x:nx,y:ny};
   }
-  return {x:team==='blue'?160:W-160,y:clamp(y,70,H-70)};
+  // Last resort. This used to hand back a fixed point without checking it, so
+  // when both searches failed a squad could be mustered straight into a wall.
+  return freeSpot(team==='blue'?160:W-160,clamp(y,70,H-70),false,team);
 }
 function autoDeploy(team,pts){
   // hold back a war chest: the rest is spent on reinforcements once the shooting starts
@@ -5555,6 +5576,12 @@ try{ window.__lvl=(t,n)=>{ lvl[t]=n; buildPalette(); };
      window.__works=()=>{ let tr=0,wi=0; for(let i=0;i<tGrid.length;i++){ if(tGrid[i]&TRENCHED) tr++; if(tGrid[i]&WIRED) wi++; }
        return {walls:walls.filter(w=>!w.dead&&!w.rubble).length,mines:mines.length,trenchCells:tr,wireCells:wi}; };
      window.__rank=(l)=>rankOf(l).name;
+     window.__stuckSq=()=>{                      // formation ANCHORS sitting in solid ground
+       let n=0; const by={};
+       for(const q of squads){ if(q.gone||q.alive<=0||q.t.air) continue;
+         const foot=!q.t.vehicle&&q.t.kind!=='siege';
+         if(blockedFor(q.fx,q.fy,foot,q.team)){ n++; by[q.type]=(by[q.type]||0)+1; } }
+       return {squads:squads.filter(q=>!q.gone).length,anchorsInSolid:n,byKind:by}; };
      window.__squadlap=()=>{                     // formations sitting inside one another
        const L=squads.filter(q=>!q.gone&&q.alive>0);
        let pairs=0,worst=0;
@@ -5650,5 +5677,9 @@ try{ window.__lvl=(t,n)=>{ lvl[t]=n; buildPalette(); };
 window.__menu  = () => { if(el('menuVeil').style.display==='flex') closeMenu(); else openMenu(); };
 window.__pause = () => { if(phase==='battle' && !paused) openMenu(); };
 
+{ // Stamp the build into the start panel. Without it there is no way to tell
+  // a change that did not work from a browser serving a cached bundle.
+  const b=el('buildStamp');
+  if(b) b.textContent='BUILD '+(typeof __BUILD__!=='undefined'?__BUILD__:'dev'); }
 genTerrain(); resize(); buildPalette(); paintInfo(); requestAnimationFrame(frame);
 }

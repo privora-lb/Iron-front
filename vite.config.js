@@ -1,6 +1,23 @@
+import { execSync } from 'node:child_process';
 import { defineConfig } from 'vite';
 
+// The stamp shown at the foot of the start panel: short SHA and the day it was
+// built. A screenshot is then enough to tell which code someone is running,
+// which is the difference between "my change did not work" and "your browser is
+// showing you a cached bundle".
+const buildId = (() => {
+  let sha = 'unknown';
+  try {
+    sha = execSync('git rev-parse --short HEAD').toString().trim();
+  } catch {
+    /* not a git checkout — a tarball build, say */
+  }
+  return `${sha} ${new Date().toISOString().slice(0, 10)}`;
+})();
+
 export default defineConfig({
+  define: { __BUILD__: JSON.stringify(buildId) },
+
   // Absolute paths so the same build serves from a web root and from the
   // Capacitor webview, which mounts dist/ at the scheme root.
   base: '/',

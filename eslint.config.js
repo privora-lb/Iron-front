@@ -9,7 +9,8 @@ export default [
     languageOptions: {
       ecmaVersion: 2022,
       sourceType: 'module',
-      globals: { ...globals.browser, ...globals.es2021 },
+      // __BUILD__ is substituted by Vite at build time (see vite.config.js).
+      globals: { ...globals.browser, ...globals.es2021, __BUILD__: 'readonly' },
     },
     rules: {
       'no-unused-vars': ['warn', { args: 'none', varsIgnorePattern: '^_' }],
