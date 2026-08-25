@@ -14,7 +14,7 @@ self.addEventListener('install', (e) => {
   e.waitUntil(
     caches
       .open(SHELL)
-      .then((c) => c.addAll(['/', '/index.html', '/manifest.webmanifest']))
+      .then((c) => c.addAll(['/', '/index.html', '/manifest.json']))
       .then(() => self.skipWaiting()),
   );
 });

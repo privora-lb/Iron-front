@@ -83,7 +83,7 @@ Every push to the branch redeploys, and pull requests get previews.
 **Anywhere else** — Netlify, Vercel, GitHub Pages, Cloudflare Pages — the recipe
 is the same: build command `npm run build`, publish directory `dist`. Serve
 `/assets/*` with a long cache and `index.html`, `sw.js` and
-`manifest.webmanifest` with `no-cache`.
+`manifest.json` with `no-cache`.
 
 ## Saved data
 

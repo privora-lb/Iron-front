@@ -32,7 +32,7 @@ Imports only ever point downward. Nothing in `data/` or `core/` may import from
 | `src/audio/`    | `sound.js` — every effect synthesised at run time, rate-limited and voice-capped                                        | Draws on `Math.random`, never the seeded RNG, so it cannot perturb a match.                                                                                    |
 | `src/platform/` | `native.js` (Capacitor bridge), `pwa.js` (service worker), `storage.js` (save data)                                     | Every function degrades to a no-op on the web.                                                                                                                 |
 | `src/styles/`   | `base` tokens, `hud`, `panels`, `overlays`, `safe-area`                                                                 | `main.css` imports the rest; that is the only file the entry point knows about.                                                                                |
-| `public/`       | Copied verbatim to the site root: manifest, service worker, icons                                                       | Nothing here is hashed, so nothing here may be cached forever.                                                                                                 |
+| `public/`       | Copied verbatim to the site root: manifest, service worker, icons, fonts                                                       | Nothing here is hashed, so nothing here may be cached forever.                                                                                                 |
 
 ## Two rules that are load-bearing
 
