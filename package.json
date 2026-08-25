@@ -33,7 +33,8 @@
     "test:sim": "npm run build:test && node test/simrun.js --seed 12345",
     "fonts": "node scripts/vendor-fonts.mjs",
     "test:crowd": "npm run build:test && node test/crowdrun.js",
-    "test:stuck": "npm run build:test && node test/stuckrun.js --map city --buy tank,apc,howitzer,mlrs --count 30 --checks 5,120,600"
+    "test:stuck": "npm run build:test && node test/stuckrun.js --map city --buy tank,apc,howitzer,mlrs --count 30 --checks 5,120,600",
+    "shot": "npm run build:test && node test/shot.js shot.png"
   },
   "dependencies": {
     "@capacitor/android": "^7.0.0",

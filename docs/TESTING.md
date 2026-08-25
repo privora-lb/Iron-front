@@ -87,10 +87,29 @@ land inside a building and never move again.
 A count that does not fall to zero within a few hundred ticks is a body that is
 trapped for good. It should read zero.
 
+## Screenshots
+
+`test/shot.js` boots the same engine against a REAL canvas and writes a PNG.
+The harness canvas records nothing, so the suite can prove `draw()` does not
+throw but never what the screen looks like - and questions like "why does the
+map look like a board game" cannot be answered any other way without a browser.
+
+```bash
+npm i --no-save @napi-rs/canvas   # tens of MB of binary; not a dependency
+npm run shot
+node test/shot.js out.png --map city --hour night --zoom 3
+```
+
+It drives the real interface - map picker, hour picker, deploy, the HUD zoom
+button - so what it captures is a real match, not a staged scene. Two habits
+worth keeping: rebuild first (it loads `dist-test/`, so an unbuilt change shows
+nothing and looks like a failed fix), and shoot before AND after, because the
+things that make a scene look wrong are rarely the things you would guess.
+
 ## What is not covered
 
-Rendering correctness (the canvas context is a stub — the tests prove `draw()`
-does not throw, not that it draws the right thing; unit shapes were checked by
-rendering the real draw code to a PNG through a native canvas, by hand), touch gestures, the native
-shell, and the service worker. Those need a real browser; Playwright against
-`npm run preview` is the obvious next step and is on the roadmap.
+Rendering correctness. The suite's canvas is a stub, so it proves `draw()` does
+not throw, not that it draws the right thing — use `npm run shot` above and look
+at the result. Also touch gestures, the native shell, and the service worker.
+Those need a real browser; Playwright against `npm run preview` is the obvious
+next step and is on the roadmap.

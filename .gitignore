@@ -46,3 +46,7 @@ npm-debug.log*
 coverage/
 .vitest/
 dist-test/
+
+# screenshots written by test/shot.js
+shot.png
+*.shot.png
