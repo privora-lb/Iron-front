@@ -206,7 +206,7 @@ let quality=1,qualityLock=false,frameMs=16,clock=0;
   const g=pick('gfx',['high','fast'],null);
   if(g){ quality=g==='high'?1:0; qualityLock=true; } }
 
-const laneOf=y=>y<DIV[0]?0:y<DIV[1]?1:2;
+const laneOf=y=>y<div[0]?0:y<div[1]?1:2;
 const maxSquad=t=>{ if(sandbox) return 50; let m=10; for(const k in SIZE_LVL) if(lvl[t]>=SIZE_LVL[k]) m=Math.max(m,+k); return m; };
 function paintSizes(){
   const team=phase==='deploy'?depTeam:(cmdTeam()||viewTeam());
@@ -246,8 +246,11 @@ const solid=(x,y)=>(tGrid[gi(x,y)]&(WATER|BUILD|CLIFF))!==0;
 const solidFor=(x,y,foot)=>(tGrid[gi(x,y)]&(foot?(WATER|CLIFF):(WATER|BUILD|CLIFF)))!==0;
 
 // the river
-const riverXAt=y=>W/2+Math.sin(y/H*6.0)*124*FS+Math.sin(y/H*13.5)*34*FS;
-const CROSS=[{y:LANE_Y[0],type:'ford'},{y:LANE_Y[1],type:'bridge'},{y:LANE_Y[2],type:'ford'}];
+const riverXAt=y=>{                        // the channel traced through the low ground
+  if(!riverRow.length||riverRow.length<2) return W/2;
+  const f=clamp(y/TG-.5,0,TH-1),i=f|0,t=f-i,j=Math.min(TH-1,i+1);
+  return riverRow[i]+(riverRow[j]-riverRow[i])*t;
+};
 const crossFor=y=>{ let c=CROSS[0]; for(const k of CROSS) if(Math.abs(k.y-y)<Math.abs(c.y-y)) c=k; return c; };
 let AIRMOVE=false;
 const acrossRiver=(x0,y0,x1,y1)=>!AIRMOVE&&hasWater()&&(x0-riverXAt(y0))*(x1-riverXAt(y1))<0;
@@ -292,6 +295,256 @@ function slopeMul(x,y,ang){                // uphill costs, downhill carries you
   if(e1>e0) return .84;
   if(e1<e0) return 1.16;
   return 1;
+}
+
+/* ===================== relief ===================== */
+// The ground is a continuous height field, and everything else is a consequence
+// of it: the river runs where the land is lowest, the sectors sit where it is
+// easiest to cross, and the light picks out real slopes instead of painted
+// contour rings.
+//
+// Fairness: the field is made rotationally symmetric about the map centre, so
+// what lies in front of one keep lies in front of the other after a 180-degree
+// turn. That is fair without a mirror line down the middle to give it away.
+let hGrid = new Float32Array(1);
+const heightAt = (x, y) => hGrid[gi(x, y)];
+let riverRow = new Float32Array(1);        // river centre-x, one entry per terrain row
+let laneY = LANE_Y.slice(), div = DIV.slice();
+let CROSS = [{ y:laneY[0], type:'ford' }, { y:laneY[1], type:'bridge' }, { y:laneY[2], type:'ford' }];
+
+// value noise: a coarse random lattice, smoothly interpolated
+function lattice(w, h) {
+  const a = new Float32Array(w * h);
+  for (let i = 0; i < a.length; i++) a[i] = R();
+  return a;
+}
+function latAt(a, w, h, u, v) {
+  const fx = u * (w - 1), fy = v * (h - 1);
+  const x0 = clamp(fx | 0, 0, w - 1), y0 = clamp(fy | 0, 0, h - 1);
+  const x1 = Math.min(w - 1, x0 + 1), y1 = Math.min(h - 1, y0 + 1);
+  let tx = fx - x0, ty = fy - y0;
+  tx = tx * tx * (3 - 2 * tx); ty = ty * ty * (3 - 2 * ty);
+  const a0 = a[y0 * w + x0] * (1 - tx) + a[y0 * w + x1] * tx;
+  const a1 = a[y1 * w + x0] * (1 - tx) + a[y1 * w + x1] * tx;
+  return a0 * (1 - ty) + a1 * ty;
+}
+
+const OCTAVES = [[3, 3, 1], [6, 5, .52], [11, 9, .27], [21, 15, .14], [41, 29, .07]];
+
+function buildRelief() {
+  hGrid = new Float32Array(TW * TH);
+  const fs = OCTAVES.map(o => lattice(o[0], o[1]));
+  let lo = 1e9, hi = -1e9;
+  for (let gy = 0; gy < TH; gy++)
+    for (let gx = 0; gx < TW; gx++) {
+      const u = gx / (TW - 1), v = gy / (TH - 1);
+      let acc = 0, amp = 0;
+      for (let k = 0; k < OCTAVES.length; k++) {
+        acc += latAt(fs[k], OCTAVES[k][0], OCTAVES[k][1], u, v) * OCTAVES[k][2];
+        amp += OCTAVES[k][2];
+      }
+      const h = acc / amp;
+      hGrid[gy * TW + gx] = h;
+      if (h < lo) lo = h;
+      if (h > hi) hi = h;
+    }
+  const span = (hi - lo) || 1;
+  for (let i = 0; i < hGrid.length; i++) hGrid[i] = (hGrid[i] - lo) / span;
+
+  // 180 degrees about the centre - the same ground for both commanders
+  for (let gy = 0; gy < TH; gy++)
+    for (let gx = 0; gx < TW; gx++) {
+      const i = gy * TW + gx, j = (TH - 1 - gy) * TW + (TW - 1 - gx);
+      if (i < j) hGrid[j] = hGrid[i];
+    }
+  shapeLandform();
+}
+
+// Each battlefield is a different piece of country, so the noise is bent into
+// the landform that map is meant to be. Every mask is symmetric about x = W/2,
+// which keeps both keeps on equal ground.
+function shapeLandform() {
+  const M = mapType;
+  // the outer two passes are a rotation of each other, the middle one is its own
+  const s1 = M === 'mountains' ? rnd(.10, .26) : 0;
+  const saddles = M === 'mountains' ? [s1, .5, 1 - s1] : null;
+  for (let gy = 0; gy < TH; gy++)
+    for (let gx = 0; gx < TW; gx++) {
+      const i = gy * TW + gx, u = gx / (TW - 1), v = gy / (TH - 1);
+      const c = Math.abs(u - .5) * 2;          // 0 on the centre line, 1 at the side edges
+      let h = hGrid[i];
+      if (M === 'villages') h = h * (.44 + .46 * c) + .13 * c;         // a broad valley
+      else if (M === 'mountains') {
+        let ridge = (1 - c) * (1 - c);
+        for (const sy of saddles) {            // three passes cut through the spine
+          const d = Math.abs(v - sy);
+          if (d < .085) ridge *= .10 + .90 * (d / .085);
+        }
+        h = h * .48 + ridge * .78 + .08;
+      } else if (M === 'beach') h = h * (.30 + .40 * (1 - v)) + .42 * (1 - v) * (1 - v);
+      else if (M === 'city') h = h * .32 + .14;                        // a flat river terrace
+      else h = h * .46 + .20 * c * c;                                  // desert flat, edges lift
+      hGrid[i] = clamp(h, 0, 1);
+    }
+  // Renormalise, then set how much relief this piece of country actually has.
+  // Without this a flat map never reaches the high-ground thresholds at all and
+  // the sight and damage bonuses are dead weight on it.
+  const RELIEF = { villages:[.06, .86], mountains:[.05, .95], beach:[.03, .82],
+                   city:[.07, .52], desert:[.05, .64] }[M] || [.05, .8];
+  let lo = 1e9, hi = -1e9;
+  for (let i = 0; i < hGrid.length; i++) { const h = hGrid[i]; if (h < lo) lo = h; if (h > hi) hi = h; }
+  const span = (hi - lo) || 1;
+  for (let i = 0; i < hGrid.length; i++) hGrid[i] = RELIEF[0] + ((hGrid[i] - lo) / span) * RELIEF[1];
+}
+
+// Water finds its own way down. The channel is traced through the lowest ground
+// with a gentle pull to the centre so it always parts the two sides, then it is
+// smoothed, made symmetric, and cut into the height field.
+function traceRiver() {
+  const col = new Float32Array(TH);            // channel centre, in cells
+  let x = (TW / 2) | 0;
+  for (let gy = 0; gy < TH; gy++) {
+    let best = x, bc = 1e9;
+    for (let dx = -3; dx <= 3; dx++) {
+      const nx = clamp(x + dx, (TW * .34) | 0, (TW * .66) | 0);
+      const pull = Math.abs(nx - (TW - 1) / 2) * .0006;   // it still has to part the two sides
+      const c = hGrid[gy * TW + nx] + pull;
+      if (c < bc) { bc = c; best = nx; }
+    }
+    x = best;
+    col[gy] = x;
+  }
+  const sm = new Float32Array(TH);             // no cell-to-cell zig-zag
+  for (let i = 0; i < TH; i++) {
+    let acc = 0, n = 0;
+    for (let k = -4; k <= 4; k++) {
+      const j = i + k;
+      if (j < 0 || j >= TH) continue;
+      acc += col[j]; n++;
+    }
+    sm[i] = acc / n;
+  }
+  riverRow = new Float32Array(TH);
+  for (let i = 0; i < TH; i++) {
+    const c = (sm[i] + ((TW - 1) - sm[TH - 1 - i])) / 2;   // exact about the grid centre
+    riverRow[i] = (c + .5) * TG;
+  }
+
+  if (!hasWater()) return;
+  for (let gy = 0; gy < TH; gy++) {             // the channel is the lowest ground around
+    const cx = riverRow[gy] / TG - .5;
+    const x0 = clamp((cx - 6) | 0, 0, TW - 1), x1 = clamp((cx + 6) | 0, 0, TW - 1);
+    for (let gx = x0; gx <= x1; gx++) {
+      const d = Math.abs(gx - cx), i = gy * TW + gx;
+      if (d < 6) hGrid[i] = Math.min(hGrid[i], .05 + d * .022);
+    }
+  }
+}
+
+// The three sectors are found, not decreed: the rows where crossing the middle
+// of the map costs least. The AI and the Left/Centre/Right buttons keep working,
+// but the corridors now follow the ground.
+function deriveLanes() {
+  const cost = new Float32Array(TH);
+  const x0 = (TW * .32) | 0, x1 = (TW * .68) | 0;
+  for (let gy = 0; gy < TH; gy++) {
+    let acc = 0;
+    for (let gx = x0; gx <= x1; gx++) { const h = hGrid[gy * TW + gx]; acc += h * h; }
+    cost[gy] = acc / (x1 - x0 + 1);
+  }
+  const bands = [[.12, .30], [.38, .62], [.70, .88]];   // corridors stay off the map edge
+  laneY = bands.map(b => {
+    let best = ((b[0] + b[1]) * .5 * TH) | 0, bc = 1e9;
+    for (let gy = (b[0] * TH) | 0; gy <= (b[1] * TH) | 0; gy++)
+      if (cost[gy] < bc) { bc = cost[gy]; best = gy; }
+    return clamp((best + .5) * TG, 200, H - 200);
+  });
+  div = [(laneY[0] + laneY[1]) / 2, (laneY[1] + laneY[2]) / 2];
+  CROSS = [{ y:laneY[0], type:'ford' }, { y:laneY[1], type:'bridge' }, { y:laneY[2], type:'ford' }];
+}
+
+// Gameplay still sees four elevation steps, so slopeMul, the sight bonus and the
+// high-ground damage bonus all keep working untouched.
+function deriveElevation() {
+  for (let i = 0; i < hGrid.length; i++) {
+    const h = hGrid[i];
+    eGrid[i] = h > .74 ? 3 : h > .54 ? 2 : h > .33 ? 1 : 0;
+  }
+}
+
+// Relief is rendered at grid resolution into a small bitmap and stretched over
+// the map, so the bilinear upscale does the smoothing for us. Light comes from
+// the north-west, which is what every reader expects a map to be lit from.
+function reliefLayer() {
+  const rc = document.createElement('canvas');
+  rc.width = TW; rc.height = TH;
+  const r = rc.getContext('2d');
+  const img = r.createImageData(TW, TH);
+  const d = img.data;
+  for (let gy = 0; gy < TH; gy++)
+    for (let gx = 0; gx < TW; gx++) {
+      const i = gy * TW + gx;
+      const hl = hGrid[gy * TW + Math.max(0, gx - 1)], hr = hGrid[gy * TW + Math.min(TW - 1, gx + 1)];
+      const hu = hGrid[Math.max(0, gy - 1) * TW + gx], hd = hGrid[Math.min(TH - 1, gy + 1) * TW + gx];
+      const lum = -((hr - hl) * .80 + (hd - hu) * .60) * 8.5;
+      const lift = hGrid[i] * .30;             // higher ground catches more light
+      const o = i * 4;
+      if (lum >= 0) {
+        d[o] = 255; d[o + 1] = 247; d[o + 2] = 214;
+        d[o + 3] = clamp((lum * .55 + lift) * 255, 0, 150);
+      } else {
+        d[o] = 16; d[o + 1] = 18; d[o + 2] = 13;
+        d[o + 3] = clamp((-lum * .60 - lift * .35) * 255, 0, 165);
+      }
+    }
+  r.putImageData(img, 0, 0);
+  return rc;
+}
+
+// How well a given thing suits a given piece of ground. Woods want gentle mid
+// slopes away from the water, marsh wants the low flat ground beside it, rock
+// wants the steep faces, crops want the flattest ground they can get, and people
+// build where it is flat and the water is close but not underfoot.
+const slopeAt = (x, y) => {
+  const i = gi(x, y), gx = i % TW, gy = (i / TW) | 0;
+  const hl = hGrid[gy * TW + Math.max(0, gx - 1)], hr = hGrid[gy * TW + Math.min(TW - 1, gx + 1)];
+  const hu = hGrid[Math.max(0, gy - 1) * TW + gx], hd = hGrid[Math.min(TH - 1, gy + 1) * TW + gx];
+  return Math.hypot(hr - hl, hd - hu);
+};
+
+function suitability(type, x, y) {
+  const h = heightAt(x, y), sl = slopeAt(x, y);
+  const wd = hasWater() ? Math.abs(x - riverXAt(y)) : 4000;
+  const flat = Math.max(0, 1 - sl * 7);
+  switch (type) {
+    case 'forest':  return (h > .20 && h < .80 ? 1 : .25) * Math.max(.1, 1 - sl * 3) * (wd > 90 ? 1 : .35);
+    case 'marsh':   return (h < .30 ? 1 : .15) * flat * (wd < 460 ? 1 : .3);
+    case 'rocks':   return (h > .48 ? 1 : .35) * Math.min(1, .25 + sl * 7);
+    case 'field':   return flat * (h < .62 ? 1 : .2) * (wd > 80 ? 1 : .3);
+    case 'orchard': return flat * (h > .14 && h < .62 ? 1 : .3);
+    case 'village': return flat * (h > .12 && h < .60 ? 1 : .2)
+                         * (wd > 150 && wd < 1100 ? 1 : .45);
+    default: return 1;
+  }
+}
+
+// Walk uphill in suitability from where the generator dropped it. This is a
+// deterministic hill-climb on purpose - no R() at all - so a feature and its
+// 180-degree partner settle onto partnered ground and the map stays fair.
+function settle(type, x, y, r) {
+  let bx = x, by = y;
+  for (let step = 0; step < 3; step++) {
+    let bs = suitability(type, bx, by), nx = bx, ny = by;
+    for (let a = 0; a < 8; a++) {
+      const ang = a * Math.PI / 4;
+      const px = clamp(bx + Math.cos(ang) * r, 90, W - 90);
+      const py = clamp(by + Math.sin(ang) * r, 90, H - 90);
+      const sc = suitability(type, px, py);
+      if (sc > bs) { bs = sc; nx = px; ny = py; }
+    }
+    bx = nx; by = ny; r *= .55;
+  }
+  return { x:bx, y:by };
 }
 
 /* ===================== trees ===================== */
@@ -612,8 +865,7 @@ function stampFeat(f){
     const q=(rx/f.rx)**2+(ry/f.ry)**2;
     if(q>1) continue;
     const i=gy*TW+gx;
-    if(f.type==='hill'){ const lvl=q<.32?3:q<.66?2:1; if(eGrid[i]<lvl) eGrid[i]=lvl; }
-    else tGrid[i]|=bit;
+    tGrid[i]|=bit;                                 // hills are relief now, not stamps
   }
 }
 function genTerrain(){
@@ -623,12 +875,22 @@ function genTerrain(){
   cGrid=new Float32Array(TW*TH); pGrid=new Uint8Array(TW*TH);
   const M=MAPS[mapType];
 
+  buildRelief();        // the land itself: noise bent into this map's landform
+  traceRiver();         // water finds the low line and cuts its channel
+  deriveLanes();        // the three sectors, where crossing actually costs least
+  deriveElevation();    // four gameplay steps, quantised off the height field
+
   if(mapType==='villages') genFarmland();
   else if(mapType==='mountains') genMountains();
   else if(mapType==='beach') genBeach();
   else if(mapType==='city') genCity();
   else genDesert();
 
+  feats=feats.filter(f=>f.type!=='hill');   // relief comes from the height field now
+  for(const f of feats){                   // nothing sits where it could not have grown
+    const at=settle(f.type,f.x,f.y,175);
+    f.x=at.x; f.y=at.y;
+  }
   for(const f of feats) stampFeat(f);
   if(M.water!=='none') carveWater();
   stampBuildings();
@@ -652,9 +914,9 @@ function genTerrain(){
   for(const team of ['blue','red']){
     const side=team==='blue'?1:-1;
     const spots=[
-      [team==='blue'?W*.31:W*.69,LANE_Y[0]],          // forward, one per sector
-      [team==='blue'?W*.33:W*.67,LANE_Y[1]],
-      [team==='blue'?W*.31:W*.69,LANE_Y[2]],
+      [team==='blue'?W*.31:W*.69,laneY[0]],          // forward, one per sector
+      [team==='blue'?W*.33:W*.67,laneY[1]],
+      [team==='blue'?W*.31:W*.69,laneY[2]],
       [team==='blue'?W*.16:W*.84,H*.30],              // two in the rear
       [team==='blue'?W*.16:W*.84,H*.70]
     ];
@@ -745,6 +1007,8 @@ function blob(x,y,rx,ry,flag){
 // a well, and the land around it is worked: an orchard on one flank and crop
 // fields on the other. Everything here is generation-time, so it all rides R().
 function village(cx,cy,houses,rx,ry){
+  const at=settle('village',cx,cy,200);      // flat ground, water close but not underfoot
+  cx=at.x; cy=at.y;
   blob(cx,cy,rx,ry,STONE);
   const RX=rx*FS,RY=ry*FS;
   const road=rnd(0,3.14),ca=Math.cos(road),sa=Math.sin(road);
@@ -799,7 +1063,7 @@ function carveWater(){
   }
 }
 function laneBelts(kind,step,skipRiver){
-  for(const dy of DIV){
+  for(const dy of div){
     for(let x=70;x<W-70;x+=step*FS){
       if(GAPS.some(g=>Math.abs(g[0]-dy)<2&&Math.abs(g[1]-x)<220*FS)) continue;
       if(skipRiver&&Math.abs(x-riverXAt(dy))<180*FS) continue;
@@ -810,27 +1074,27 @@ function laneBelts(kind,step,skipRiver){
 }
 function genFarmland(){
   laneBelts(()=>R()<.58?'forest':'rocks',132,true);
-  for(const cy of LANE_Y){
+  for(const cy of laneY){
     const n=3+Math.floor(R()*2);
     for(let i=0;i<n;i++){
       const type=['hill','forest','hill','rocks','marsh'][Math.floor(R()*5)];
       const x=rnd(330,W/2-280),y=clamp(cy+rnd(-140,140),90,H-90);
       const rx=rnd(130,235),ry=rnd(78,138),rot=rnd(0,3.14);
-      feats.push({type,x,y,rx,ry,rot}); feats.push({type,x:W-x,y,rx,ry,rot:-rot});
+      feats.push({type,x,y,rx,ry,rot}); feats.push({type,x:W-x,y:H-y,rx,ry,rot:-rot});
     }
     const hx=rnd(460,W/2-340);
     feats.push({type:'hill',x:hx,y:cy+rnd(-80,80),rx:rnd(175,240),ry:rnd(110,150),rot:rnd(0,3.14)});
     feats.push({type:'hill',x:W-hx,y:cy+rnd(-80,80),rx:rnd(175,240),ry:rnd(110,150),rot:rnd(0,3.14)});
   }
-  for(const cy of [LANE_Y[0],LANE_Y[2]]){
+  for(const cy of [laneY[0],laneY[2]]){
     const vx=rnd(820,W/2-440),vy=clamp(cy+rnd(-90,90),140,H-140);
     village(vx,vy,6+((R()*4)|0),178,130);
-    village(W-vx,vy,6+((R()*4)|0),178,130);
+    village(W-vx,H-vy,6+((R()*4)|0),178,130);
   }
 }
 function genMountains(){
   // ridge walls along the sector lines, leaving the passes open
-  for(const dy of DIV){
+  for(const dy of div){
     for(let x=40;x<W-40;x+=70){
       if(GAPS.some(g=>Math.abs(g[0]-dy)<2&&Math.abs(g[1]-x)<170)) continue;
       const rx=rnd(58,88),ry=rnd(46,72),y=dy+rnd(-20,20);
@@ -839,21 +1103,21 @@ function genMountains(){
       blob(x,y,rx*.62,ry*.62,CLIFF);                 // sheer rock, impassable
     }
   }
-  for(const cy of LANE_Y){
+  for(const cy of laneY){
     for(let i=0;i<5;i++){
       const x=rnd(300,W/2-260),y=clamp(cy+rnd(-190,190),90,H-90);
       const rx=rnd(150,250),ry=rnd(90,150),rot=rnd(0,3.14);
-      feats.push({type:'hill',x,y,rx,ry,rot}); feats.push({type:'hill',x:W-x,y,rx,ry,rot:-rot});
+      feats.push({type:'hill',x,y,rx,ry,rot}); feats.push({type:'hill',x:W-x,y:H-y,rx,ry,rot:-rot});
       feats.push({type:'rocks',x,y,rx:rx*.5,ry:ry*.5,rot});
-      feats.push({type:'rocks',x:W-x,y,rx:rx*.5,ry:ry*.5,rot:-rot});
+      feats.push({type:'rocks',x:W-x,y:H-y,rx:rx*.5,ry:ry*.5,rot:-rot});
     }
     const px=rnd(700,W/2-380);
     feats.push({type:'forest',x:px,y:cy+rnd(-70,70),rx:rnd(90,150),ry:rnd(60,100),rot:rnd(0,3)});
-    feats.push({type:'forest',x:W-px,y:cy+rnd(-70,70),rx:rnd(90,150),ry:rnd(60,100),rot:rnd(0,3)});
+    feats.push({type:'forest',x:W-px,y:H-cy+rnd(-70,70),rx:rnd(90,150),ry:rnd(60,100),rot:rnd(0,3)});
   }
   const vx=rnd(760,W/2-460);                          // a mountain hamlet each side
-  village(vx,LANE_Y[1]+rnd(-60,60),5,150,110);
-  village(W-vx,LANE_Y[1]+rnd(-60,60),5,150,110);
+  village(vx,laneY[1]+rnd(-60,60),5,150,110);
+  village(W-vx,H-laneY[1]+rnd(-60,60),5,150,110);
 }
 function genBeach(){
   for(let gy=0;gy<TH;gy++) for(let gx=0;gx<TW;gx++){
@@ -861,30 +1125,30 @@ function genBeach(){
     if(y>H-70) tGrid[i]|=WATER;                       // the sea along the southern edge
     else if(y>H-130) tGrid[i]|=FORD;                  // surf line
   }
-  for(const cy of [LANE_Y[0],LANE_Y[1]]){             // dune ridges
+  for(const cy of [laneY[0],laneY[1]]){             // dune ridges
     for(let i=0;i<5;i++){
       const x=rnd(250,W/2-240),y=clamp(cy+rnd(-130,130),90,H-220);
       const rx=rnd(160,260),ry=rnd(60,100),rot=rnd(-.4,.4);
-      feats.push({type:'hill',x,y,rx,ry,rot}); feats.push({type:'hill',x:W-x,y,rx,ry,rot:-rot});
+      feats.push({type:'hill',x,y,rx,ry,rot}); feats.push({type:'hill',x:W-x,y:H-y,rx,ry,rot:-rot});
     }
   }
   laneBelts(()=>R()<.5?'rocks':'hill',150,true);
   for(let i=0;i<7;i++){                               // beach obstacles and bunkers
     const x=rnd(300,W/2-300),y=rnd(H*.62,H-190);
     buildings.push({x,y,w:rnd(34,50),h:rnd(26,36),rot:rnd(-.2,.2),bunker:true});
-    buildings.push({x:W-x,y,w:rnd(34,50),h:rnd(26,36),rot:rnd(-.2,.2),bunker:true});
+    buildings.push({x:W-x,y:H-y,w:rnd(34,50),h:rnd(26,36),rot:rnd(-.2,.2),bunker:true});
   }
   const vx=rnd(700,W/2-420);                          // a seaside village above the dunes
-  village(vx,LANE_Y[0],6,170,120); village(W-vx,LANE_Y[0],6,170,120);
+  village(vx,laneY[0],6,170,120); village(W-vx,H-laneY[0],6,170,120);
   for(let i=0;i<6;i++){                               // scrub above the tide line
     const x=rnd(300,W/2-280),y=rnd(120,H*.5);
     feats.push({type:'forest',x,y,rx:rnd(70,120),ry:rnd(50,90),rot:rnd(0,3)});
-    feats.push({type:'forest',x:W-x,y,rx:rnd(70,120),ry:rnd(50,90),rot:rnd(0,3)});
+    feats.push({type:'forest',x:W-x,y:H-y,rx:rnd(70,120),ry:rnd(50,90),rot:rnd(0,3)});
   }
 }
 function genCity(){
   // ---- the main city: a compact core straddling the canal on the centre lane ----
-  const coreX0=W*.34,coreX1=W*.66,coreY0=LANE_Y[1]-620,coreY1=LANE_Y[1]+620;
+  const coreX0=W*.34,coreX1=W*.66,coreY0=laneY[1]-620,coreY1=laneY[1]+620;
   const roadX=360,roadY=300;                       // wide avenues between the blocks
   for(let bx=coreX0;bx<coreX1;bx+=roadX){
     for(let by=coreY0;by<coreY1;by+=roadY){
@@ -904,40 +1168,40 @@ function genCity(){
   }
   // ---- outskirts: small villages and lone houses along the wing lanes ----
   for(const li of [0,2]){
-    const cy=LANE_Y[li];
+    const cy=laneY[li];
     for(let i=0;i<3;i++){
       const vx=rnd(600,W/2-500)+i*140;
       const vy=clamp(cy+rnd(-220,220),140,H-140);
       village(vx,vy,3,110,80);
-      village(W-vx,vy,3,110,80);
+      village(W-vx,H-vy,3,110,80);
     }
     for(let x=460;x<W/2-300;x+=rnd(420,760)){      // farmhouses strung along the road
       const y=clamp(cy+rnd(-150,150),120,H-120);
       buildings.push({x,y,w:rnd(42,60),h:rnd(32,44),rot:rnd(-.3,.3)});
-      buildings.push({x:W-x,y,w:rnd(42,60),h:rnd(32,44),rot:rnd(-.3,.3)});
+      buildings.push({x:W-x,y:H-y,w:rnd(42,60),h:rnd(32,44),rot:rnd(-.3,.3)});
       if(R()<.5){
         buildings.push({x:x+rnd(-70,70),y:y+rnd(50,90),w:rnd(30,44),h:rnd(24,34),rot:rnd(-.3,.3)});
-        buildings.push({x:W-x+rnd(-70,70),y:y+rnd(50,90),w:rnd(30,44),h:rnd(24,34),rot:rnd(-.3,.3)});
+        buildings.push({x:W-x+rnd(-70,70),y:H-y-rnd(50,90),w:rnd(30,44),h:rnd(24,34),rot:rnd(-.3,.3)});
       }
     }
     for(let i=0;i<3;i++){                          // fields, hedges and copses between them
       const x=rnd(420,W/2-360),y=clamp(cy+rnd(-240,240),120,H-120);
       feats.push({type:'forest',x,y,rx:rnd(90,150),ry:rnd(60,105),rot:rnd(0,3)});
-      feats.push({type:'forest',x:W-x,y,rx:rnd(90,150),ry:rnd(60,105),rot:rnd(0,3)});
+      feats.push({type:'forest',x:W-x,y:H-y,rx:rnd(90,150),ry:rnd(60,105),rot:rnd(0,3)});
     }
     const hx=rnd(520,W/2-420);
     feats.push({type:'hill',x:hx,y:cy+rnd(-120,120),rx:rnd(170,240),ry:rnd(110,150),rot:rnd(0,3)});
     feats.push({type:'hill',x:W-hx,y:cy+rnd(-120,120),rx:rnd(170,240),ry:rnd(110,150),rot:rnd(0,3)});
   }
-  feats.push({type:'hill',x:W*.22,y:LANE_Y[1],rx:230,ry:140,rot:0});
-  feats.push({type:'hill',x:W*.78,y:LANE_Y[1],rx:230,ry:140,rot:0});
+  feats.push({type:'hill',x:W*.22,y:laneY[1],rx:230,ry:140,rot:0});
+  feats.push({type:'hill',x:W*.78,y:laneY[1],rx:230,ry:140,rot:0});
 }
 function genDesert(){
-  for(const cy of LANE_Y){                            // long dunes
+  for(const cy of laneY){                            // long dunes
     for(let i=0;i<4;i++){
       const x=rnd(280,W/2-260),y=clamp(cy+rnd(-140,140),90,H-90);
       const rx=rnd(210,320),ry=rnd(70,110),rot=rnd(-.35,.35);
-      feats.push({type:'hill',x,y,rx,ry,rot}); feats.push({type:'hill',x:W-x,y,rx,ry,rot:-rot});
+      feats.push({type:'hill',x,y,rx,ry,rot}); feats.push({type:'hill',x:W-x,y:H-y,rx,ry,rot:-rot});
     }
     const rx2=rnd(420,W/2-340);                       // rocky outcrops
     feats.push({type:'rocks',x:rx2,y:cy+rnd(-90,90),rx:rnd(90,150),ry:rnd(60,100),rot:rnd(0,3)});
@@ -954,12 +1218,12 @@ function genDesert(){
   }
   const ox=rnd(620,W/2-420);                          // oasis and a walled compound
   for(const cx of [ox,W-ox]){
-    const oy=LANE_Y[1]+rnd(-120,120);
+    const oy=laneY[1]+rnd(-120,120);
     feats.push({type:'forest',x:cx,y:oy,rx:120,ry:90,rot:rnd(0,3)});
     village(cx,oy,4,140,100);
   }
   const vx=rnd(800,W/2-460);
-  village(vx,LANE_Y[2],5,160,115); village(W-vx,LANE_Y[2],5,160,115);
+  village(vx,laneY[2],5,160,115); village(W-vx,H-laneY[2],5,160,115);
 }
 function bakeTerrain(){
   const g0=document.createElement('canvas'); g0.width=Math.ceil(W*BAKE); g0.height=Math.ceil(H*BAKE);
@@ -969,8 +1233,10 @@ function bakeTerrain(){
   const grd=g.createLinearGradient(0,0,W*.3,H);
   grd.addColorStop(0,M.pal[0]); grd.addColorStop(.45,M.pal[1]); grd.addColorStop(1,M.pal[2]);
   g.fillStyle=grd; g.fillRect(0,0,W,H);
+  g.imageSmoothingEnabled=true;                 // real light on real slopes
+  g.drawImage(reliefLayer(),0,0,W,H);
   if(mapType==='city'){                                   // wide avenues through the core
-    const x0=W*.34,x1=W*.66,y0=LANE_Y[1]-620,y1=LANE_Y[1]+620;
+    const x0=W*.34,x1=W*.66,y0=laneY[1]-620,y1=laneY[1]+620;
     g.strokeStyle='rgba(30,30,28,.38)'; g.lineWidth=46;
     for(let x=x0;x<=x1;x+=360){ g.beginPath(); g.moveTo(x-180,y0-160); g.lineTo(x-180,y1+160); g.stroke(); }
     for(let y=y0;y<=y1;y+=300){ g.beginPath(); g.moveTo(x0-200,y-150); g.lineTo(x1+200,y-150); g.stroke(); }
@@ -979,11 +1245,11 @@ function bakeTerrain(){
     for(let y=y0;y<=y1;y+=300){ g.beginPath(); g.moveTo(x0-200,y-150); g.lineTo(x1+200,y-150); g.stroke(); }
     g.setLineDash([]);
     g.strokeStyle='rgba(120,106,74,.20)'; g.lineWidth=34;   // roads out to the villages
-    for(const cy of [LANE_Y[0],LANE_Y[2]]){
+    for(const cy of [laneY[0],laneY[2]]){
       g.beginPath(); g.moveTo(0,cy+rnd(-20,20));
       g.bezierCurveTo(W*.3,cy+rnd(-50,50),W*.7,cy+rnd(-50,50),W,cy+rnd(-20,20)); g.stroke();
     }
-    g.beginPath(); g.moveTo(0,LANE_Y[1]); g.lineTo(W,LANE_Y[1]); g.stroke();
+    g.beginPath(); g.moveTo(0,laneY[1]); g.lineTo(W,laneY[1]); g.stroke();
   }
   if(mapType==='desert'||mapType==='beach'){              // wind ripples in the sand
     g.strokeStyle=mapType==='desert'?'rgba(226,206,152,.13)':'rgba(226,214,178,.14)';
@@ -997,7 +1263,7 @@ function bakeTerrain(){
   if(mapType!=='city'){
     g.strokeStyle=mapType==='desert'?'rgba(150,128,84,.20)':'rgba(120,106,74,.18)';
     g.lineWidth=30; g.lineCap='round';
-    for(const cy of LANE_Y){ g.beginPath(); g.moveTo(0,cy+rnd(-20,20));
+    for(const cy of laneY){ g.beginPath(); g.moveTo(0,cy+rnd(-20,20));
       g.bezierCurveTo(W*.3,cy+rnd(-40,40),W*.7,cy+rnd(-40,40),W,cy+rnd(-20,20)); g.stroke(); }
   }
 
@@ -1007,15 +1273,7 @@ function bakeTerrain(){
     cx.beginPath();cx.ellipse(0,0,f.rx*k,f.ry*k,0,0,6.28);cx.restore();};
 
   for(const f of feats){
-    if(f.type==='hill'){
-      for(let k=4;k>=1;k--){ g.fillStyle=`rgba(142,136,88,${.06+(4-k)*.045})`; shape(g,f,k/4); g.fill(); }
-      g.save(); g.translate(f.x,f.y); g.rotate(f.rot);
-      g.fillStyle='rgba(236,226,172,.11)'; g.beginPath(); g.ellipse(-f.rx*.18,-f.ry*.22,f.rx*.58,f.ry*.52,0,0,6.28); g.fill();
-      g.fillStyle='rgba(22,24,16,.16)'; g.beginPath(); g.ellipse(f.rx*.22,f.ry*.26,f.rx*.6,f.ry*.48,0,0,6.28); g.fill();
-      g.restore();
-      g.strokeStyle='rgba(214,204,150,.15)'; g.lineWidth=1.2;
-      shape(g,f,.97); g.stroke(); shape(g,f,.6); g.stroke(); shape(g,f,.3); g.stroke();
-    } else if(f.type==='marsh'){
+    if(f.type==='marsh'){
       g.fillStyle='rgba(66,100,102,.4)'; shape(g,f,1); g.fill();
       g.strokeStyle='rgba(158,204,204,.22)'; g.lineWidth=1;
       for(let i=0;i<16;i++){ const a=rnd(0,6.28),rr=Math.sqrt(R());
@@ -1643,12 +1901,12 @@ function issue(list,kind,x,y,tsq){
   if(kind==='move') pings.push({x,y,t:.9});
 }
 function sendToLane(list,lane){
-  const cy=LANE_Y[lane]; let i=0;
+  const cy=laneY[lane]; let i=0;
   for(const sq of list){
     const cur=laneOf(sq.fy);
     let tx=sq.fx,ty=cy+((i%3)-1)*105;
     if(cur!==lane){
-      const dividers=cur<lane?DIV.slice(cur,lane):DIV.slice(lane,cur);
+      const dividers=cur<lane?div.slice(cur,lane):div.slice(lane,cur);
       const passes=GAPS.filter(g=>dividers.some(d=>Math.abs(d-g[0])<2));
       if(passes.length) tx=passes.reduce((a,b)=>Math.abs(a[1]-sq.fx)<Math.abs(b[1]-sq.fx)?a:b)[1];
     }
@@ -2201,7 +2459,7 @@ function stepAI(dt){
     const buys=1+Math.min(2,Math.floor(wave/3));
     for(let b2=0;b2<buys;b2++)
     if(coinsLeft('red')>=unitCost(pick,n)&&liveCount('red')+n<=capOf('red')){
-      const p=safeSpot('red',W-rnd(220,520),clamp(LANE_Y[(R()*3)|0]+rnd(-220,220),90,H-90));
+      const p=safeSpot('red',W-rnd(220,520),clamp(laneY[(R()*3)|0]+rnd(-220,220),90,H-90));
       if(inZone('red',p.x,p.y)){
         const sq=makeSquad('red',pick,p.x,p.y,n);
         sq.legion=laneOf(p.y)+1; spent.red+=unitCost(pick,n);
@@ -2262,7 +2520,7 @@ function stepAI(dt){
       const str=[0,0,0];
       for(const f of foes) str[clamp(laneOf(f.fy),0,2)]+=f.alive;
       let weak=0; for(let z=1;z<3;z++) if(str[z]<str[weak]) weak=z;
-      if(R()<conf) focusY=LANE_Y[weak];
+      if(R()<conf) focusY=laneY[weak];
     }
     // the objective: the nearest enemy body in this sector, else the headquarters
     let obj=null,bd=1e9;
@@ -2504,23 +2762,23 @@ function autoDeploy(team,pts){
     const n=arr.length; if(!n) return;
     const span=Math.min(430,n*92);
     arr.forEach((tp,i)=>put(tp,xF+rnd(-28,28),
-      clamp(LANE_Y[li]+(n===1?0:-span/2+span*i/(n-1)),90,H-90),li+1));
+      clamp(laneY[li]+(n===1?0:-span/2+span*i/(n-1)),90,H-90),li+1));
   });
   // weapons companies dug in behind the line they support
   support.forEach((tp,i)=>{ const li=i%3;
-    put(tp,xS+rnd(-30,30),clamp(LANE_Y[li]+rnd(-140,140),90,H-90),li+1); });
+    put(tp,xS+rnd(-30,30),clamp(laneY[li]+rnd(-140,140),90,H-90),li+1); });
   // armour massed as one fist in a chosen sector, carriers screening its flanks
   const spear=Math.floor(R()*3);
   armour.forEach((tp,i)=>put(tp,xF-(team==='blue'?60:-60)+rnd(-30,30),
-    clamp(LANE_Y[spear]+((i%2)?1:-1)*rnd(30,150),90,H-90),spear+1));
+    clamp(laneY[spear]+((i%2)?1:-1)*rnd(30,150),90,H-90),spear+1));
   carrier.forEach((tp,i)=>{ const li=i%2===0?spear:(spear+1)%3;
-    put(tp,xF+rnd(-50,50),clamp(LANE_Y[li]+rnd(-130,130),90,H-90),li+1); });
+    put(tp,xF+rnd(-50,50),clamp(laneY[li]+rnd(-130,130),90,H-90),li+1); });
   // divisional artillery, well to the rear
   guns.forEach((tp,i)=>put(tp,(UNITS[tp[0]].minRange>200?xE:xB)+rnd(-30,30),
-    clamp(LANE_Y[i%3]+rnd(-90,90),90,H-90),4));
+    clamp(laneY[i%3]+rnd(-90,90),90,H-90),4));
   for(let i=0;i<6&&left>=MINE.cost;i++){
     const mx=team==='blue'?rnd(W*.30,W*.44):rnd(W*.56,W*.70);
-    const my=clamp(LANE_Y[i%3]+rnd(-160,160),90,H-90);
+    const my=clamp(laneY[i%3]+rnd(-160,160),90,H-90);
     if(solid(mx,my)) continue;
     for(let j=0;j<3;j++) mines.push({team,x:mx+rnd(-26,26),y:my+rnd(-26,26),t:0});
     spent[team]+=MINE.cost; left-=MINE.cost;
@@ -2528,8 +2786,8 @@ function autoDeploy(team,pts){
   if(left>=WALL.cost&&R()<.6){
     const wx=team==='blue'?xF+92:xF-92;
     for(let i=0;i<Math.min(3,Math.floor(left/WALL.cost));i++){
-      if(solid(wx,LANE_Y[i%3])) continue;
-      walls.push({team,x:wx,y:LANE_Y[i%3],len:WALL.len,hp:WALL.hp,max:WALL.hp,dead:false});
+      if(solid(wx,laneY[i%3])) continue;
+      walls.push({team,x:wx,y:laneY[i%3],len:WALL.len,hp:WALL.hp,max:WALL.hp,dead:false});
       spent[team]+=WALL.cost; }
   }
   paintPoints();
@@ -2981,7 +3239,7 @@ function draw(){
   }
   ctx.setLineDash([16,14]); ctx.lineWidth=2.4/cam.s;
   ctx.strokeStyle='rgba(201,162,39,.14)';
-  for(const dy of DIV){ ctx.beginPath(); ctx.moveTo(0,dy); ctx.lineTo(W,dy); ctx.stroke(); }
+  for(const dy of div){ ctx.beginPath(); ctx.moveTo(0,dy); ctx.lineTo(W,dy); ctx.stroke(); }
   ctx.setLineDash([]);
   ctx.strokeStyle='rgba(230,212,152,.3)'; ctx.lineWidth=4/cam.s;
   for(const g of GAPS){ ctx.beginPath(); ctx.moveTo(g[1]-140,g[0]); ctx.lineTo(g[1]+140,g[0]); ctx.stroke(); }
@@ -3027,7 +3285,7 @@ function draw(){
     ctx.setLineDash([]);
   }
   ctx.font='600 26px Cinzel, serif'; ctx.textAlign='center'; ctx.fillStyle='rgba(230,216,184,.11)';
-  for(let i=0;i<3;i++) ctx.fillText(LANE_NAME[i].toUpperCase(),W*.2,LANE_Y[i]-8);
+  for(let i=0;i<3;i++) ctx.fillText(LANE_NAME[i].toUpperCase(),W*.2,laneY[i]-8);
   ctx.font='600 15px Cinzel, serif'; ctx.fillStyle='rgba(236,224,180,.28)';
   if(hasWater()) for(const cr of CROSS) ctx.fillText(cr.type==='bridge'?'ROAD BRIDGE':'FORD',
     riverXAt(cr.y),cr.y-(cr.type==='bridge'?104:66));
@@ -3888,7 +4146,7 @@ function drawMini(){
     ctx.moveTo(x+(riverXAt(cr.y)-40)*s,y+cr.y*s); ctx.lineTo(x+(riverXAt(cr.y)+40)*s,y+cr.y*s); ctx.stroke(); }
   ctx.lineWidth=2;
   ctx.strokeStyle='rgba(201,162,39,.2)'; ctx.lineWidth=1;
-  for(const dy of DIV){ ctx.beginPath(); ctx.moveTo(x,y+dy*s); ctx.lineTo(x+mw,y+dy*s); ctx.stroke(); }
+  for(const dy of div){ ctx.beginPath(); ctx.moveTo(x,y+dy*s); ctx.lineTo(x+mw,y+dy*s); ctx.stroke(); }
   for(const c of castles){
     ctx.fillStyle=c.dead?'#4A443A':COL[c.team].lt;
     ctx.fillRect(x+(c.x-c.hw)*s,y+(c.y-c.hh)*s,c.hw*2*s,c.hh*2*s);
@@ -4384,7 +4642,7 @@ function selectLegion(n){
   toast('Group '+n+' · '+list.length+' units · '+men+' effectives');
 }
 function laneCmd(lane){
-  if(!selected.length||!cmdTeam()){ lookAt(W/2,LANE_Y[lane]); toast(LANE_NAME[lane]); return; }
+  if(!selected.length||!cmdTeam()){ lookAt(W/2,laneY[lane]); toast(LANE_NAME[lane]); return; }
   sendToLane(selected,lane);
   toast('Orders: move to the '+LANE_NAME[lane].toLowerCase());
 }
@@ -4611,6 +4869,32 @@ try{ window.__lvl=(t,n)=>{ lvl[t]=n; buildPalette(); };
        return {alive:civs.filter(c=>c.alive).length,farmers:civs.filter(c=>c.alive&&c.job==='farmer').length,states:st}; };
      window.__shoot=(x,y,r)=>{ noteGunfire(x,y); killCivsNear(x,y,r||60); return civs.filter(c=>c.alive).length; };
      window.__killAllCivs=()=>{ for(const c of civs) c.alive=false; return 0; };
+     window.__aHome=()=>{ const h=buildings.find(b=>b.home); return h?{x:h.x,y:h.y}:null; };
+     window.__relief=()=>{ let lo=1,hi=0,sum=0;
+       for(let i=0;i<hGrid.length;i++){ const h=hGrid[i]; if(h<lo)lo=h; if(h>hi)hi=h; sum+=h; }
+       let asym=0;
+       for(let gy=0;gy<TH;gy++) for(let gx=0;gx<TW;gx++){
+         const a=hGrid[gy*TW+gx],b=hGrid[(TH-1-gy)*TW+(TW-1-gx)];
+         asym=Math.max(asym,Math.abs(a-b)); }
+       let mirror=0;
+       for(let gy=0;gy<TH;gy++) for(let gx=0;gx<TW;gx++){
+         const a=hGrid[gy*TW+gx],b=hGrid[gy*TW+(TW-1-gx)];
+         mirror=Math.max(mirror,Math.abs(a-b)); }
+       const lv=[0,0,0,0]; for(let i=0;i<eGrid.length;i++) lv[eGrid[i]]++;
+       return {lo:+lo.toFixed(3),hi:+hi.toFixed(3),mean:+(sum/hGrid.length).toFixed(3),
+         rotationalError:+asym.toFixed(6),mirrorError:+mirror.toFixed(3),
+         elevSpread:lv,lanes:laneY.map(Math.round),
+         riverSpan:[Math.round(Math.min(...riverRow)),Math.round(Math.max(...riverRow))]}; };
+     window.__place=()=>{ const by={};
+       for(const f of feats){ const k=f.type; (by[k]||(by[k]=[])).push({h:heightAt(f.x,f.y),s:slopeAt(f.x,f.y)}); }
+       const out={};
+       for(const k in by){ const a=by[k];
+         out[k]={n:a.length,h:+(a.reduce((t,v)=>t+v.h,0)/a.length).toFixed(3),
+                 slope:+(a.reduce((t,v)=>t+v.s,0)/a.length).toFixed(4)}; }
+       let rh=0,rs=0; for(let i=0;i<hGrid.length;i++){ rh+=hGrid[i]; }
+       for(let gy=1;gy<TH-1;gy+=2) for(let gx=1;gx<TW-1;gx+=2) rs+=slopeAt(gx*TG,gy*TG);
+       out._map={h:+(rh/hGrid.length).toFixed(3),slope:+(rs/(((TH-2)/2|0)*((TW-2)/2|0))).toFixed(4)};
+       return out; };
      window.__hash=()=>stateHash();
      window.__tick=(n)=>{ for(let i=0;i<n;i++) tick(SIM); return stateHash(); };
      window.__seed=(v)=>{ matchSeed=v; return matchSeed; };

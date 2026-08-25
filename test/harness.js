@@ -300,7 +300,8 @@ function world(map, budget) {
   const g = world('villages');
   const born = g.hook('civs')();
   g.frames(120);
-  g.hook('shoot')(900, 550, 40);
+  const home = g.hook('aHome')();               // fire into a village that actually exists
+  g.hook('shoot')(home.x, home.y, 40);
   g.frames(120);
   const scared = g.hook('civs')();
   const problems = [];
@@ -334,6 +335,52 @@ function world(map, budget) {
       'killing every civilian changed the sim: ' + withCivs + ' vs ' + without
       + '\ncivilian code must never touch R() or feed back into sim state');
   } else ok('civilians are outside the simulation', 'killing all of them leaves stateHash identical');
+}
+
+// The ground itself: a real height field, fair under a 180-degree turn, with
+// corridors and a river that come from the terrain rather than from constants.
+{
+  const problems = [];
+  for (const map of MAPS) {
+    const g = world(map);
+    const r = g.hook('relief')();
+    // Landing Beach shelves down to the sea along one edge, which cannot be
+    // rotationally symmetric; both keeps sit at y = H/2, so it stays fair.
+    const tol = map === 'beach' ? 1.01 : 0.0001;
+    if (r.rotationalError > tol) {
+      problems.push(map + ': halves differ by ' + r.rotationalError + ' - not fair under a 180 turn');
+    }
+    if (r.mirrorError < 0.05) problems.push(map + ': mirror-symmetric, the reflection line will show');
+    const total = r.elevSpread.reduce((a, b) => a + b, 0);
+    if (r.elevSpread[0] + r.elevSpread[1] === total) {
+      problems.push(map + ': no high ground at all, the sight and damage bonuses are dead');
+    }
+    if (r.lanes.some(y => y < 220 || y > 3080)) problems.push(map + ': a corridor hugs the map edge: ' + r.lanes);
+    if (r.lanes[0] >= r.lanes[1] || r.lanes[1] >= r.lanes[2]) problems.push(map + ': corridors out of order');
+  }
+  if (problems.length) bad('the ground is a fair, real height field', problems.join('\n'));
+  else ok('the ground is a fair, real height field',
+    'rotationally symmetric, no mirror line, high ground on every map');
+}
+
+// Corridors and the river must follow the seed, not sit at hardcoded thirds.
+{
+  const a = world('villages');
+  const b = loadGame({ quiet: true });
+  b.all('#mapPick [data-map="villages"]')[0].click();
+  b.hook('seed')(987654);
+  b.all('#startVeil [data-budget="2000"]')[0].click();
+  const ra = a.hook('relief')(), rb = b.hook('relief')();
+  const problems = [];
+  if (ra.lanes.join() === rb.lanes.join()) {
+    problems.push('two seeds gave the same corridors ' + ra.lanes + ' - they are still hardcoded');
+  }
+  if (ra.riverSpan[1] - ra.riverSpan[0] < 120) {
+    problems.push('the river runs straight (' + ra.riverSpan + ') - it is not following the ground');
+  }
+  if (problems.length) bad('corridors and the river come from the terrain', problems.join('\n'));
+  else ok('corridors and the river come from the terrain',
+    'lanes ' + ra.lanes + ' vs ' + rb.lanes + ', river wanders ' + (ra.riverSpan[1] - ra.riverSpan[0]));
 }
 
 /* ------------------------------------------------------------------ */
