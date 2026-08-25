@@ -3401,18 +3401,26 @@ function draw(){
     const sq=s.sq; if(!visible(sq.team)||!sq.seen) continue;
     DRAW.push(s);
   }
+  // Zoomed out, a man is a third of a pixel across and the whole army is
+  // invisible. Below the detail threshold the men are not drawn at all: each
+  // squad gets one marker instead, sized in SCREEN pixels so it stays legible
+  // however far out the camera is, carrying the same icon as its card in the
+  // deck. Zoom in and the marker gives way to the models.
+  if(!detail){
+    for(let i=0;i<squads.length;i++){
+      const sq=squads[i];
+      if(sq.gone||sq.alive<=0) continue;
+      if(sq.fx<vx0||sq.fx>vx1||sq.fy<vy0||sq.fy>vy1) continue;
+      if(!visible(sq.team)||!sq.seen) continue;
+      drawSquadMarker(sq);
+    }
+  }
   DRAW.sort(depthCmp);
-  for(let i=0;i<DRAW.length;i++){
+  for(let i=0;detail&&i<DRAW.length;i++){
     const s=DRAW[i];
     const sq=s.sq;
     const c=COL[sq.team],t=sq.t;
     if(t.kind==='siege'){ drawEngine(s,c); continue; }
-    if(!detail){
-      ctx.fillStyle=s.hp<s.max*.4?c.dark:c.body;
-      const r=t.kind==='cav'?3.4:2.8;
-      ctx.beginPath(); ctx.arc(s.x,s.y,r,0,6.28); ctx.fill();
-      continue;
-    }
     if(t.air) drawHeli(s,c,t);
     else if(t.vehicle) drawVehicle(s,c,t);
     else drawTrooper(s,c,t);
@@ -3422,6 +3430,57 @@ function draw(){
   // unit's right. Two tiers: `detail` gives the real silhouette, `close` adds
   // the parts you can only make out zoomed in, so a wide view costs no more
   // than it did before.
+  // One squad, one marker, drawn at a fixed size on screen. The icon is the same
+  // one the deck card uses, rendered once into an offscreen canvas and blitted
+  // after that - drawing thirteen unit silhouettes by path every frame for every
+  // squad would cost more than the whole rest of the field.
+  function drawSquadMarker(sq){
+    const c=COL[sq.team], t=sq.t;
+    const S=32/cam.s;                                  // ~32 screen px, whatever the zoom
+    const hw=S*.58, hh=S*.47;
+    const x=sq.fx, y=sq.fy;
+    const frac=clamp(sq.alive/Math.max(1,sq.initial),0,1);
+    const sel=selected.indexOf(sq)>=0;
+
+    // the ground the formation actually covers, so a big squad reads as big
+    ctx.fillStyle=sq.team==='blue'?'rgba(76,127,191,.13)':'rgba(190,59,46,.13)';
+    ctx.beginPath();
+    ctx.ellipse(x,y,Math.max(sq.fw,S)*.5,Math.max(sq.fd,S*.7)*.5,sq.facing,0,6.28);
+    ctx.fill();
+
+    ctx.save();
+    ctx.translate(x,y);
+    // Which way it faces: a small chevron clear of the plate, drawn first so it
+    // can never sit on top of the silhouette.
+    const pr=Math.max(hw,hh);
+    ctx.fillStyle=c.body;
+    ctx.beginPath();
+    ctx.moveTo(Math.cos(sq.facing)*pr*1.5,Math.sin(sq.facing)*pr*1.5);
+    ctx.lineTo(Math.cos(sq.facing+.42)*pr*1.12,Math.sin(sq.facing+.42)*pr*1.12);
+    ctx.lineTo(Math.cos(sq.facing-.42)*pr*1.12,Math.sin(sq.facing-.42)*pr*1.12);
+    ctx.closePath(); ctx.fill();
+    ctx.fillStyle='rgba(0,0,0,.45)';                   // plate
+    ctx.beginPath(); ctx.roundRect(-hw+S*.03,-hh+S*.05,hw*2,hh*2,S*.12); ctx.fill();
+    ctx.fillStyle=sq.team==='blue'?'#22354D':'#4A211C';
+    ctx.beginPath(); ctx.roundRect(-hw,-hh,hw*2,hh*2,S*.12); ctx.fill();
+    ctx.strokeStyle=sel?'#C9A227':c.body;
+    ctx.lineWidth=S*(sel?.075:.045);
+    ctx.beginPath(); ctx.roundRect(-hw,-hh,hw*2,hh*2,S*.12); ctx.stroke();
+
+    // The silhouette sits above the strength bar and inside the plate. Sized off
+    // S rather than the plate, so it stays the same on screen at any zoom.
+    const isz=S*.68;
+    const spr=iconSprite(sq.type,'#F0E6CC');           // parchment reads on the dark plate
+    if(spr) ctx.drawImage(spr,-isz*.5,-hh*.92+isz*.06,isz,isz);
+
+    ctx.fillStyle='rgba(0,0,0,.6)';                    // strength, as a bar
+    ctx.fillRect(-hw*.8,hh*.42,hw*1.6,S*.11);
+    ctx.fillStyle=frac>.6?c.body:frac>.3?'#D9A63A':'#C4483A';
+    ctx.fillRect(-hw*.8,hh*.42,hw*1.6*frac,S*.11);
+
+    ctx.restore();
+  }
+
   function drawTrooper(s,c,t){
     const firing=s.cd<.14&&s.tgt;
     const kick=Math.max(0,s.kick||0);
@@ -4421,6 +4480,23 @@ function unitIcon(g,key,S,col){
     default: dot(0,0,4);
   }
   g.restore();
+}
+// Unit silhouettes as sprites, drawn once and kept. Keyed by unit and colour;
+// there are only ever a couple of dozen, so the cache never needs evicting.
+const SPRITES=new Map();
+function iconSprite(key,col){
+  const k=key+'|'+col;
+  if(SPRITES.has(k)) return SPRITES.get(k);
+  let cv2=null;
+  try{
+    cv2=document.createElement('canvas');
+    cv2.width=64; cv2.height=64;
+    const g=cv2.getContext('2d');
+    g.translate(32,32);
+    unitIcon(g,key,56,col);
+  }catch(e){ cv2=null; }                 // no offscreen canvas: markers lose their icon, nothing else
+  SPRITES.set(k,cv2);
+  return cv2;
 }
 function iconDataURL(key,size,col){
   const cv2=document.createElement('canvas');
