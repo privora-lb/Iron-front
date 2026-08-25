@@ -4,7 +4,7 @@
 //   node test/harness.js            full suite
 //   node test/harness.js --fast     shorter match runs, for a quick loop
 //
-// Four checks, in the order they catch things:
+// Five checks, in the order they catch things:
 //   1. LOAD        index.html evaluates with no error - catches the load-time
 //                  crash that shows up in a browser as a black screen.
 //   2. MATCH       a match runs 1800+ frames on each of the five battlefields,
@@ -14,6 +14,11 @@
 //   4. DETERMINISM the same seed in two separate node processes, driven by tick
 //                  count alone, agrees on stateHash() at every checkpoint - and
 //                  different seeds disagree.
+//   5. WORLD       the living scenery holds together: every map is planted with
+//                  trees, felling one takes its cover with it, villages are laid
+//                  out around a road, civilians react to gunfire - and killing
+//                  every civilian leaves stateHash() untouched, which is what
+//                  keeps them free in lockstep.
 const path = require('path');
 const { execFileSync } = require('child_process');
 const { loadGame } = require('./dom.js');
@@ -218,6 +223,117 @@ for (const map of FAST ? ['villages'] : MAPS) {
     && a.points.every((p, i) => p.hash === b.points[i].hash);
   assert(!same, 'different seeds produce different battles',
     same ? 'seeds 111 and 222 produced identical hashes - the seed is not reaching the sim' : '');
+}
+
+/* ------------------------------------------------------------------ */
+/* 5. WORLD - living scenery: trees, villages, civilians               */
+/* ------------------------------------------------------------------ */
+head('5. WORLD');
+
+function world(map, budget) {
+  const g = loadGame({ quiet: true });
+  g.all('#mapPick [data-map="' + map + '"]')[0].click();
+  g.hook('seed')(4242);
+  g.all('#startVeil [data-budget="' + (budget || 2000) + '"]')[0].click();
+  g.el('autoDep').click();
+  g.el('startBattle').click();
+  return g;
+}
+
+// Trees must exist as entities on every battlefield, or nothing can crush them.
+{
+  const thin = [];
+  for (const map of MAPS) {
+    const g = world(map);
+    const t = g.hook('trees')();
+    if (t.total < 200 || t.woodCells < 200) thin.push(map + ': ' + JSON.stringify(t));
+  }
+  if (thin.length) bad('every map is planted with trees', thin.join('\n'));
+  else ok('every map is planted with trees');
+}
+
+// Felling has to take the cover with it - that is the whole point.
+{
+  const g = world('villages');
+  const t = g.hook('aTree')();
+  const before = g.hook('trees')();
+  const hadWood = g.hook('wood')(t.x, t.y);
+  const felled = g.hook('fell')(t.x, t.y, 60);
+  const after = g.hook('trees')();
+  const stillWood = g.hook('wood')(t.x, t.y);
+  g.frames(90);
+  const settled = g.hook('trees')();
+  const problems = [];
+  if (!hadWood) problems.push('a standing tree did not mark its cell as WOOD');
+  if (felled < 1) problems.push('felling r=60 around a tree took down nothing');
+  if (after.down !== felled) problems.push('felled ' + felled + ' but treesDown says ' + after.down);
+  if (stillWood) problems.push('WOOD cover survived after every tree there came down');
+  if (after.woodCells >= before.woodCells) problems.push('wood cells did not shrink');
+  if (settled.falling !== 0) problems.push('toppling trees never settled: ' + settled.falling + ' still falling');
+  if (g.fault()) problems.push('draw fault: ' + g.fault());
+  if (problems.length) bad('felling trees removes their cover', problems.join('\n'));
+  else ok('felling trees removes their cover', felled + ' felled, WOOD cleared, trunks settled');
+}
+
+// A village should read as a place: one road per village, houses squared to it.
+{
+  const g = world('villages');
+  const L = g.hook('land')();
+  const problems = [];
+  if (!L.props.road) problems.push('no roads laid');
+  if (!L.props.well) problems.push('no wells');
+  if (L.homes < 8) problems.push('only ' + L.homes + ' houses');
+  if (!L.barns) problems.push('no barns');
+  if (!L.fieldCells) problems.push('no standing crops');
+  // the real test: many houses, few angles - each village squares to its own road
+  if (L.distinctHouseAngles !== L.props.road) {
+    problems.push('houses use ' + L.distinctHouseAngles + ' angles for ' + L.props.road
+      + ' roads - they are not aligned to the road');
+  }
+  if (problems.length) bad('villages are laid out around a road', problems.join('\n'));
+  else ok('villages are laid out around a road',
+    L.homes + ' houses on ' + L.props.road + ' roads, ' + L.barns + ' barns, ' + L.fieldCells + ' crop cells');
+}
+
+// Civilians live here and take cover when the shooting starts.
+{
+  const g = world('villages');
+  const born = g.hook('civs')();
+  g.frames(120);
+  g.hook('shoot')(900, 550, 40);
+  g.frames(120);
+  const scared = g.hook('civs')();
+  const problems = [];
+  if (born.alive < 10) problems.push('only ' + born.alive + ' civilians spawned');
+  if (!born.farmers) problems.push('no farmers among them');
+  if (!(scared.states.cower || scared.states.alarm)) {
+    problems.push('nobody reacted to gunfire: ' + JSON.stringify(scared.states));
+  }
+  if (g.fault()) problems.push('draw fault: ' + g.fault());
+  if (problems.length) bad('civilians live in the villages and react to fire', problems.join('\n'));
+  else ok('civilians live in the villages and react to fire',
+    born.alive + ' civilians, ' + ((scared.states.cower || 0) + (scared.states.alarm || 0)) + ' took cover');
+}
+
+// The load-bearing guarantee: civilians are NOT simulation state. Killing every
+// one of them must not move stateHash() by a single bit, or lockstep desyncs.
+{
+  const a = world('villages');
+  const b = world('villages');
+  a.hook('tick')(240);
+  b.hook('tick')(240);
+  const base = a.hook('hash')() >>> 0;
+  b.hook('killAllCivs')();
+  b.hook('tick')(240);
+  a.hook('tick')(240);
+  const withCivs = a.hook('hash')() >>> 0;
+  const without = b.hook('hash')() >>> 0;
+  if (base === 0) bad('civilians are outside the simulation', 'hash never advanced');
+  else if (withCivs !== without) {
+    bad('civilians are outside the simulation',
+      'killing every civilian changed the sim: ' + withCivs + ' vs ' + without
+      + '\ncivilian code must never touch R() or feed back into sim state');
+  } else ok('civilians are outside the simulation', 'killing all of them leaves stateHash identical');
 }
 
 /* ------------------------------------------------------------------ */

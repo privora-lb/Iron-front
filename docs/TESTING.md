@@ -62,6 +62,16 @@ It is a measurement, not a pass/fail gate — crowds at a bridgehead legitimatel
 press together. Use it to compare before and after when you touch `separate()`,
 `accel()` or the formation spacing.
 
+## The stuck-unit probe
+
+`test/stuckrun.js` counts bodies standing where they are not allowed to stand.
+Pass `--buy tank,apc,howitzer,mlrs` to exercise the mid-battle reinforcement
+path, which spawns at a base through `hqSpawn()` and is where units used to
+land inside a building and never move again.
+
+A count that does not fall to zero within a few hundred ticks is a body that is
+trapped for good. It should read zero.
+
 ## What is not covered
 
 Rendering correctness (the canvas context is a stub — the tests prove `draw()`

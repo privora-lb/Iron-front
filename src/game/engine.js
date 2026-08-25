@@ -236,7 +236,7 @@ let tGrid=new Uint16Array(TW*TH);          // flags
 let eGrid=new Uint8Array(TW*TH);          // elevation 0..3
 let cGrid=new Float32Array(TW*TH);        // churn 0..1
 let pGrid=new Uint8Array(TW*TH);          // churn already painted
-const WOOD=1,MARSH=2,ROCK=4,WATER=8,FORD=16,STONE=32,BUILD=64,SCORCH=128,CLIFF=256,WIRED=512,TRENCHED=1024;
+const WOOD=1,MARSH=2,ROCK=4,WATER=8,FORD=16,STONE=32,BUILD=64,SCORCH=128,CLIFF=256,WIRED=512,TRENCHED=1024,FIELD=2048;
 const gi=(x,y)=>clamp((y/TG)|0,0,TH-1)*TW+clamp((x/TG)|0,0,TW-1);
 const terrainAt=(x,y)=>tGrid[gi(x,y)];
 const elevAt=(x,y)=>eGrid[gi(x,y)];
@@ -264,6 +264,7 @@ function groundName(x,y){
   if(f&TRENCHED) return 'dug into a trench';
   if(f&WIRED) return 'caught in wire';
   if(f&WOOD)  return 'in the woods';
+  if(f&FIELD) return 'in standing crops';
   if(f&MARSH) return 'in marsh';
   if(f&ROCK)  return 'on rocks';
   if(churnAt(x,y)>.45) return 'in churned mud';
@@ -276,6 +277,7 @@ function moveMul(x,y,kind){
   const f=terrainAt(x,y);
   let m=1;
   if(f&WOOD)  m*= kind==='cav'?.55:kind==='siege'?.58:.74;
+  if(f&FIELD) m*= kind==='cav'||kind==='siege'?1:.88;    // wheat catches at a man's legs
   if(f&MARSH) m*= kind==='siege'?.5:.66;
   if(f&FORD)  m*= kind==='siege'?.45:.62;
   if(f&ROCK)  m*= kind==='cav'?.6:.72;
@@ -292,10 +294,316 @@ function slopeMul(x,y,ang){                // uphill costs, downhill carries you
   return 1;
 }
 
+/* ===================== trees ===================== */
+// Trees are entities, not paint. A tank crushes what it drives over, shellfire
+// fells whole stands, and the WOOD cover bit is DERIVED from how many trunks are
+// still standing in a cell - so a wood that has been shelled flat stops giving
+// cover, which is most of what makes the ground feel alive.
+//
+// Determinism: planting happens once during genTerrain and draws from R() like
+// the rest of terrain generation. Felling is pure geometry - it never touches
+// R() - so two lockstep peers always fell the same trees at the same tick.
+let trees = [], treeAt = new Int32Array(1), woodN = new Uint16Array(1);
+let props = [];                                  // roads, yards and wells, baked into the ground
+let falling = [], treesDown = 0;
+const TMP = [];
+
+function plantTree(x, y, s, gr) {
+  const t = { x, y, s, gr, dead:false, fall:0, fa:0, cells:[], next:-1 };
+  const r = Math.max(TG * .55, s * .85);           // how far the crown shades the ground
+  for (let gy = (((y - r) / TG) | 0); gy <= (((y + r) / TG) | 0); gy++)
+    for (let gx = (((x - r) / TG) | 0); gx <= (((x + r) / TG) | 0); gx++) {
+      if (gx < 0 || gy < 0 || gx >= TW || gy >= TH) continue;
+      const i = gy * TW + gx;
+      if (tGrid[i] & (WATER | FORD | BUILD)) continue;
+      woodN[i]++; tGrid[i] |= WOOD; t.cells.push(i);
+    }
+  if (!t.cells.length) return null;                // nowhere to stand
+  const c = gi(x, y);
+  t.next = treeAt[c]; treeAt[c] = trees.length;
+  trees.push(t);
+  return t;
+}
+
+// Every forest blob becomes real trunks. Runs after the water, buildings and
+// keeps are stamped, so nothing is planted in a river or through a wall.
+function plantTrees() {
+  trees = []; falling = []; treesDown = 0;
+  treeAt = new Int32Array(TW * TH).fill(-1);
+  woodN = new Uint16Array(TW * TH);
+  for (const f of feats) {
+    if (f.type === 'orchard') {                    // planted by hand, so it stands in rows
+      const step = rnd(26, 34), ca = Math.cos(f.rot), sa = Math.sin(f.rot);
+      for (let u = -f.rx; u <= f.rx; u += step)
+        for (let v = -f.ry; v <= f.ry; v += step) {
+          if ((u / f.rx) ** 2 + (v / f.ry) ** 2 > 1) continue;
+          const x = f.x + ca * u - sa * v, y = f.y + sa * u + ca * v;
+          const jx = rnd(-3, 3), jy = rnd(-3, 3), sz = rnd(8, 12), gr = (80 + rnd(-8, 16)) | 0;
+          if (x < 4 || y < 4 || x > W - 4 || y > H - 4) continue;
+          if (terrainAt(x, y) & (WATER | FORD | BUILD)) continue;
+          plantTree(x + jx, y + jy, sz, gr);
+        }
+      continue;
+    }
+    if (f.type !== 'forest') continue;
+    const count = clamp(f.rx * f.ry / 150, 20, 190);
+    for (let i = 0; i < count; i++) {
+      const a = rnd(0, 6.28), rr = Math.sqrt(R());
+      const x = f.x + Math.cos(a) * f.rx * rr * .92, y = f.y + Math.sin(a) * f.ry * rr * .92;
+      const s = rnd(9, 17), gr = (72 + rnd(-14, 22)) | 0;
+      if (x < 4 || y < 4 || x > W - 4 || y > H - 4) continue;
+      if (terrainAt(x, y) & (WATER | FORD | BUILD)) continue;
+      plantTree(x, y, s, gr);
+    }
+  }
+}
+
+function treesNear(x, y, r) {
+  TMP.length = 0;
+  const x0 = clamp(((x - r - TG) / TG) | 0, 0, TW - 1), x1 = clamp(((x + r + TG) / TG) | 0, 0, TW - 1);
+  const y0 = clamp(((y - r - TG) / TG) | 0, 0, TH - 1), y1 = clamp(((y + r + TG) / TG) | 0, 0, TH - 1);
+  for (let gy = y0; gy <= y1; gy++)
+    for (let gx = x0; gx <= x1; gx++)
+      for (let n = treeAt[gy * TW + gx]; n >= 0; n = trees[n].next) {
+        const t = trees[n];
+        if (t.dead) continue;
+        if (dist(t.x, t.y, x, y) <= r + t.s * .4) TMP.push(t);
+      }
+  return TMP;
+}
+
+// A tree comes down, and the cover it was giving goes with it.
+function fellTree(t, ang) {
+  if (!t || t.dead) return;
+  t.dead = true; t.fall = 0; t.fa = ang;
+  treesDown++;
+  for (const i of t.cells) if (woodN[i] > 0 && --woodN[i] === 0) tGrid[i] &= ~WOOD;
+  if (canopyCtx) {                                 // cut the crown out of the baked canopy
+    canopyCtx.globalCompositeOperation = 'destination-out';
+    canopyCtx.beginPath(); canopyCtx.arc(t.x, t.y, t.s * 1.3, 0, 6.28); canopyCtx.fill();
+    canopyCtx.globalCompositeOperation = 'source-over';
+  }
+  if (falling.length < 90) falling.push(t);
+  else layTrunk(t);
+  for (let i = 0; i < 7; i++) parts.push({ x:t.x + vr(-t.s, t.s), y:t.y + vr(-t.s, t.s),
+    vx:vr(-16, 16) + Math.cos(ang) * 20, vy:vr(-16, 16) + Math.sin(ang) * 20,
+    t:vr(1.1, 2.4), r:vr(1.6, 3.2), type:'leaf' });
+}
+
+// Once it has finished toppling, the trunk is painted into the ground layer and
+// stops costing anything to draw.
+function layTrunk(t) {
+  if (!decalCtx) return;
+  const a = t.fa, L = t.s * 2.1;
+  decalCtx.save();
+  decalCtx.translate(t.x, t.y); decalCtx.rotate(a);
+  decalCtx.fillStyle = 'rgba(38,30,20,.5)';
+  decalCtx.fillRect(-2, -t.s * .34, L + 4, t.s * .68);
+  decalCtx.fillStyle = 'rgba(74,58,38,.85)';
+  decalCtx.fillRect(0, -t.s * .26, L, t.s * .52);
+  decalCtx.fillStyle = `rgba(${(t.gr * .5) | 0},${(t.gr * .8) | 0},${(t.gr * .42) | 0},.6)`;
+  decalCtx.beginPath(); decalCtx.ellipse(L, 0, t.s * .8, t.s * .62, 0, 0, 6.28); decalCtx.fill();
+  decalCtx.restore();
+  decalCtx.fillStyle = 'rgba(58,44,28,.9)';        // the stump left behind
+  decalCtx.beginPath(); decalCtx.arc(t.x, t.y, t.s * .3, 0, 6.28); decalCtx.fill();
+}
+
+// One crown, drawn into whichever layer is asking for it.
+function paintCrown(c, t) {
+  const s = t.s, gr = t.gr;
+  c.fillStyle = 'rgba(12,20,10,.4)';
+  c.beginPath(); c.ellipse(t.x + 4, t.y + 5, s * .95, s * .6, 0, 0, 6.28); c.fill();
+  c.fillStyle = `rgba(${(gr * .58) | 0},${gr},${(gr * .5) | 0},.94)`;
+  c.beginPath(); c.arc(t.x, t.y, s, 0, 6.28); c.fill();
+  c.fillStyle = 'rgba(150,186,110,.26)';
+  c.beginPath(); c.arc(t.x - s * .32, t.y - s * .36, s * .46, 0, 6.28); c.fill();
+}
+
+// Toppling is animation only, so it rides the cosmetic clock.
+function stepFalling(dt) {
+  for (let i = falling.length - 1; i >= 0; i--) {
+    const t = falling[i];
+    t.fall += dt * 2.6;
+    if (t.fall >= 1) { layTrunk(t); falling.splice(i, 1); }
+  }
+}
+
+// Standing crops go down under tracks, leaving a visible path across the plot.
+// Pure geometry, no R(), so both peers flatten the same cells.
+function flattenCrop(x, y) {
+  const i = gi(x, y);
+  if (!(tGrid[i] & FIELD)) return;
+  tGrid[i] &= ~FIELD;
+  if (!decalCtx) return;
+  decalCtx.fillStyle = 'rgba(92,80,48,.5)';
+  decalCtx.beginPath();
+  decalCtx.ellipse((i % TW) * TG + TG / 2, ((i / TW) | 0) * TG + TG / 2, TG * .8, TG * .62, 0, 0, 6.28);
+  decalCtx.fill();
+}
+
+// Anything with an engine flattens the wood it drives through. The hull pushes
+// each trunk down away from itself, so a tank leaves a visible path through a
+// stand rather than a scatter of random stumps.
+function crushTrees(s) {
+  const list = treesNear(s.x, s.y, s.sq.t.vehicle ? 15 : 10);
+  if (!list.length) return;
+  for (let i = list.length - 1; i >= 0; i--) {
+    const t = list[i];
+    fellTree(t, Math.atan2(t.y - s.y, t.x - s.x) || s.ang || 0);
+  }
+}
+
+/* ===================== civilians ===================== */
+// The people who live here. They are deliberately OUTSIDE the simulation: they
+// never absorb a shot, never block movement, never change cover and never touch
+// R(). That makes them free in lockstep - two peers can disagree about where a
+// farmer is standing without the match diverging by a single tick - and it is
+// why every random draw below is vr() or Math.random(), never rnd() or R().
+let civs = [], gunfire = [], civT = 0;
+const CIVCAP = 150;
+
+function noteGunfire(x, y) {                     // a short memory of where the shooting is
+  gunfire.push(x, y);
+  if (gunfire.length > 64) gunfire.splice(0, 2);
+}
+
+function nearestPlot(x, y) {
+  let best = null, bd = 1e9;
+  for (const f of feats) {
+    if (f.type !== 'field' && f.type !== 'orchard') continue;
+    const d = dist(f.x, f.y, x, y);
+    if (d < bd) { bd = d; best = f; }
+  }
+  return bd < 760 ? best : null;
+}
+
+function spawnCivs() {
+  civs = []; gunfire = []; civT = 0;
+  for (const h of buildings) {
+    if (!h.home) continue;
+    if (civs.length >= CIVCAP) break;
+    const n = 1 + ((Math.random() * 2.3) | 0);
+    for (let i = 0; i < n; i++) {
+      const farmer = Math.random() < .55;
+      const plot = farmer ? nearestPlot(h.x, h.y) : null;
+      civs.push({
+        x: h.x + vr(-24, 24), y: h.y + vr(-24, 24), hx: h.x, hy: h.y, home: h,
+        px: plot ? plot.x + vr(-45, 45) : h.x + vr(-70, 70),
+        py: plot ? plot.y + vr(-32, 32) : h.y + vr(-70, 70),
+        job: farmer ? 'farmer' : 'villager', st: 'work', out: 1, t: vr(0, 4),
+        spd: vr(14, 23), ang: vr(0, 6.28), ph: vr(0, 6.28), calm: 0, alive: true,
+      });
+    }
+  }
+}
+
+function stepCivs(dt) {
+  if (!civs.length) return;
+  civT -= dt;
+  const scan = civT <= 0;
+  if (scan) civT = .4;
+  for (let i = civs.length - 1; i >= 0; i--) {
+    const c = civs[i];
+    if (!c.alive) { civs.splice(i, 1); continue; }
+    if (scan) {
+      let near = false;
+      for (let k = 0; k < gunfire.length; k += 2) {
+        const dx = gunfire[k] - c.x, dy = gunfire[k + 1] - c.y;
+        if (dx * dx + dy * dy < 250000) { near = true; break; }   // shooting within ~500
+      }
+      if (c.home.dead) c.st = 'flee';              // no house left to run back to
+      else if (near) { if (c.st === 'work') c.st = 'alarm'; c.calm = 0; }
+      else if (c.st === 'alarm' || c.st === 'cower') {
+        c.calm += .4;
+        if (c.calm > 8) { c.st = 'work'; c.calm = 0; }
+      }
+    }
+    let tx, ty, sp = c.spd;
+    if (c.st === 'cower') { c.ph += dt * 1.4; continue; }
+    if (c.st === 'flee') { tx = c.x < W / 2 ? -90 : W + 90; ty = c.y; sp = c.spd * 2.4; }
+    else if (c.st === 'alarm') {
+      if (dist(c.x, c.y, c.hx, c.hy) < 15) { c.st = 'cower'; continue; }
+      tx = c.hx; ty = c.hy; sp = c.spd * 2.1;
+    } else {
+      tx = c.out ? c.px : c.hx; ty = c.out ? c.py : c.hy;
+      if (dist(c.x, c.y, tx, ty) < 13) {           // arrived: work the plot, then head back
+        c.t -= dt; c.ph += dt * 2.6;
+        if (c.t <= 0) { c.out = c.out ? 0 : 1; c.t = vr(4, 11); }
+        continue;
+      }
+    }
+    const a = Math.atan2(ty - c.y, tx - c.x);
+    let d = a - c.ang;
+    while (d > Math.PI) d -= 6.283185;
+    while (d < -Math.PI) d += 6.283185;
+    c.ang += d * Math.min(1, dt * 7);
+    const nx = c.x + Math.cos(c.ang) * sp * dt, ny = c.y + Math.sin(c.ang) * sp * dt;
+    if (!(terrainAt(nx, ny) & (WATER | CLIFF))) { c.x = nx; c.y = ny; }
+    c.ph += dt * 7;
+    if (c.st === 'flee' && (c.x < -70 || c.x > W + 70)) c.alive = false;
+  }
+}
+
+// Caught in the fighting. Cosmetic only - nothing here feeds back into the sim.
+function killCivsNear(x, y, r) {
+  if (!civs.length || r <= 0) return;
+  const r2 = r * r;
+  for (const c of civs) {
+    if (!c.alive) continue;
+    const dx = c.x - x, dy = c.y - y;
+    if (dx * dx + dy * dy > r2) continue;
+    c.alive = false;
+    burst(c.x, c.y, 3, 'spark');
+    if (decalCtx) {
+      decalCtx.fillStyle = 'rgba(92,26,20,.5)';
+      decalCtx.beginPath();
+      decalCtx.ellipse(c.x, c.y, vr(5, 8), vr(3, 6), vr(0, 3), 0, 6.28);
+      decalCtx.fill();
+    }
+  }
+}
+
+function drawCivs() {
+  if (!civs.length) return;
+  const eyes = visionEyes, side = viewTeam() === 'blue' ? -1 : 1;
+  for (const c of civs) {
+    if (!c.alive) continue;
+    if (c.x < vx0 || c.x > vx1 || c.y < vy0 || c.y > vy1) continue;
+    if ((c.x - W / 2) * side > 0) {               // enemy ground: only if something sees it
+      let on = false;
+      for (let e = 0; e < eyes.length; e += 3) {
+        const dx = c.x - eyes[e], dy = c.y - eyes[e + 1], r = eyes[e + 2];
+        if (dx * dx + dy * dy < r * r) { on = true; break; }
+      }
+      if (!on) continue;
+    }
+    const down = c.st === 'cower';
+    const bob = down ? 0 : Math.sin(c.ph) * 1.15;
+    ctx.fillStyle = 'rgba(0,0,0,.28)';
+    ctx.beginPath(); ctx.ellipse(c.x + 1, c.y + 3, 3.6, 2, 0, 0, 6.28); ctx.fill();
+    if (down) {                                   // flat against the wall
+      ctx.fillStyle = c.job === 'farmer' ? '#6E5A34' : '#4B4A46';
+      ctx.beginPath(); ctx.ellipse(c.x, c.y, 4.4, 2.4, c.ang, 0, 6.28); ctx.fill();
+      continue;
+    }
+    ctx.fillStyle = c.job === 'farmer' ? '#6E5A34' : '#4B4A46';
+    ctx.fillRect(c.x - 1.7, c.y - 5 + bob, 3.4, 5.4);
+    ctx.fillStyle = c.job === 'farmer' ? '#C9AF73' : '#B7A78B';
+    ctx.beginPath(); ctx.arc(c.x, c.y - 6.5 + bob, 1.95, 0, 6.28); ctx.fill();
+    if (c.job === 'farmer' && c.st === 'work') {  // a tool over the shoulder
+      ctx.strokeStyle = 'rgba(84,64,38,.9)'; ctx.lineWidth = 1;
+      ctx.beginPath();
+      ctx.moveTo(c.x + 2, c.y - 6 + bob); ctx.lineTo(c.x + 4.4, c.y + 1 + bob);
+      ctx.stroke();
+    }
+  }
+}
+
 /* ===================== terrain generation ===================== */
 function stampFeat(f){
   f.rx*=FS; f.ry*=FS;                              // one scale for the whole terrain
-  const bit={forest:WOOD,marsh:MARSH,rocks:ROCK,hill:0}[f.type];
+  // forest and orchard lay down no WOOD here: plantTrees() derives it from trunks
+  const bit={forest:0,orchard:0,field:FIELD,marsh:MARSH,rocks:ROCK,hill:0}[f.type];
   const x0=clamp(((f.x-f.rx)/TG)|0,0,TW-1),x1=clamp(((f.x+f.rx)/TG)|0,0,TW-1);
   const y0=clamp(((f.y-f.ry)/TG)|0,0,TH-1),y1=clamp(((f.y+f.ry)/TG)|0,0,TH-1);
   for(let gy=y0;gy<=y1;gy++) for(let gx=x0;gx<=x1;gx++){
@@ -310,7 +618,7 @@ function stampFeat(f){
 }
 function genTerrain(){
   srand(matchSeed);
-  feats=[]; buildings=[]; fires=[];
+  feats=[]; buildings=[]; fires=[]; props=[];
   tGrid=new Uint16Array(TW*TH); eGrid=new Uint8Array(TW*TH);
   cGrid=new Float32Array(TW*TH); pGrid=new Uint8Array(TW*TH);
   const M=MAPS[mapType];
@@ -385,6 +693,8 @@ function genTerrain(){
   for(let i=0;i<5;i++) birds.push({x:rnd(0,W),y:rnd(70,H-70),
     v:rnd(30,55)*(R()<.5?-1:1),ph:rnd(0,6.28),n:3+((R()*4)|0),sp:rnd(9,15)});
   for(const b of buildings) b.hearth=R()<.45;
+  plantTrees();                                // trunks last: nothing planted in water or through a wall
+  spawnCivs();                                 // and the people who live here
   bakeTerrain();
 }
 function stampBuildings(){
@@ -430,13 +740,48 @@ function blob(x,y,rx,ry,flag){
       if(((px-x)/rx)**2+((py-y)/ry)**2<=1) tGrid[gy*TW+gx]|=flag;
     }
 }
+// A village is a place, not a scatter of boxes. One track runs through it, the
+// houses stand square to that track with a yard behind each, there are barns and
+// a well, and the land around it is worked: an orchard on one flank and crop
+// fields on the other. Everything here is generation-time, so it all rides R().
 function village(cx,cy,houses,rx,ry){
   blob(cx,cy,rx,ry,STONE);
   const RX=rx*FS,RY=ry*FS;
-  houses=Math.round(houses*1.8);
-  for(let i=0;i<houses;i++)
-    buildings.push({x:cx+rnd(-RX*.78,RX*.78),y:cy+rnd(-RY*.74,RY*.74),
-      w:rnd(34,56),h:rnd(28,44),rot:rnd(-.3,.3)});
+  const road=rnd(0,3.14),ca=Math.cos(road),sa=Math.sin(road);
+  props.push({kind:'road',x:cx,y:cy,a:road,len:RX*2.25,w:rnd(15,22)});
+
+  const n=Math.max(3,Math.round(houses*1.5));
+  for(let i=0;i<n;i++){
+    const along=(n<2?0:(i/(n-1))*2-1)*.84+rnd(-.05,.05);
+    const side=(i%2)?1:-1;                          // alternate down the two frontages
+    const off=rnd(42,76);
+    const hx=cx+ca*RX*along-sa*side*off, hy=cy+sa*RX*along+ca*side*off;
+    if(hx<60||hy<60||hx>W-60||hy>H-60) continue;
+    buildings.push({x:hx,y:hy,w:rnd(36,54),h:rnd(28,40),rot:road,home:true});
+    // the yard sits behind the house, away from the road
+    const yd=rnd(34,50);
+    props.push({kind:'yard',x:hx-sa*side*yd,y:hy+ca*side*yd,
+      rx:rnd(24,34),ry:rnd(18,26),a:road});
+    if(R()<.5) buildings.push({x:hx+ca*rnd(-26,26)-sa*side*rnd(50,68),
+      y:hy+sa*rnd(-26,26)+ca*side*rnd(50,68),w:rnd(28,42),h:rnd(20,30),rot:road,barn:true});
+  }
+  props.push({kind:'well',x:cx+rnd(-18,18),y:cy+rnd(-18,18),r:rnd(7,10)});
+
+  // worked land on the outskirts: an orchard one side, crop plots the other.
+  // Ruined city blocks are not farmed.
+  const oside=R()<.5?1:-1;
+  if(mapType==='city') return;
+  feats.push({type:'orchard',x:cx-sa*oside*(RY+rnd(70,110)),y:cy+ca*oside*(RY+rnd(70,110)),
+    rx:rnd(70,105),ry:rnd(46,70),rot:road});
+  const plots=2+((R()*3)|0);
+  for(let i=0;i<plots;i++){
+    const fa=road+rnd(-.5,.5);
+    const d=RY+rnd(80,190),sd=-oside;
+    const fx=cx+ca*rnd(-RX*.9,RX*.9)-sa*sd*d, fy=cy+sa*rnd(-RX*.9,RX*.9)+ca*sd*d;
+    if(fx<80||fy<80||fx>W-80||fy>H-80) continue;
+    feats.push({type:'field',x:fx,y:fy,rx:rnd(72,124),ry:rnd(50,86),rot:fa,
+      crop:(R()*3)|0,rows:rnd(9,15)});
+  }
 }
 function carveWater(){
   const canal=MAPS[mapType].water==='canal';
@@ -685,22 +1030,57 @@ function bakeTerrain(){
         g.beginPath(); g.moveTo(x-s,y+s*.5); g.lineTo(x-s*.2,y-s*.75); g.lineTo(x+s*.6,y-s*.2); g.lineTo(x+s,y+s*.5); g.fill();
         g.fillStyle='rgba(226,220,196,.16)';
         g.beginPath(); g.moveTo(x-s*.2,y-s*.75); g.lineTo(x+s*.6,y-s*.2); g.lineTo(x-s*.1,y+s*.1); g.fill(); }
+    } else if(f.type==='field'){                        // a worked plot, sown in rows
+      const CROP=[['rgba(154,134,58,.55)','rgba(184,162,76,.42)'],    // wheat
+                  ['rgba(94,116,52,.5)', 'rgba(122,146,66,.4)'],      // green crop
+                  ['rgba(120,94,50,.5)', 'rgba(146,118,64,.4)']];     // ploughed earth
+      const col=CROP[(f.crop|0)%3];
+      g.save(); g.translate(f.x,f.y); g.rotate(f.rot);
+      g.beginPath(); g.ellipse(0,0,f.rx,f.ry,0,0,6.28); g.clip();
+      g.fillStyle=col[0]; g.fillRect(-f.rx,-f.ry,f.rx*2,f.ry*2);
+      g.strokeStyle=col[1]; g.lineWidth=2.4;
+      const step=(f.ry*2)/Math.max(4,f.rows|0);
+      for(let y=-f.ry;y<=f.ry;y+=step){ g.beginPath(); g.moveTo(-f.rx,y); g.lineTo(f.rx,y); g.stroke(); }
+      g.restore();
+      g.strokeStyle='rgba(58,50,30,.4)'; g.lineWidth=1.8;             // the field boundary
+      shape(g,f,1); g.stroke();
+    } else if(f.type==='orchard'){
+      g.fillStyle='rgba(96,82,50,.42)'; shape(g,f,1); g.fill();       // tilled soil under the rows
     } else {
-      g.fillStyle='rgba(34,48,30,.5)'; shape(g,f,1); g.fill();
-      const count=clamp(f.rx*f.ry/240,16,90);
-      for(let i=0;i<count;i++){
-        const a=rnd(0,6.28),rr=Math.sqrt(R());
-        const x=f.x+Math.cos(a)*f.rx*rr*.92,y=f.y+Math.sin(a)*f.ry*rr*.92;
-        if(terrainAt(x,y)&(WATER|FORD|BUILD)) continue;
-        const s=rnd(9,17);
-        c.fillStyle='rgba(12,20,10,.4)'; c.beginPath(); c.ellipse(x+4,y+5,s*.95,s*.6,0,0,6.28); c.fill();
-        const gr=(72+rnd(-14,22))|0;
-        c.fillStyle=`rgba(${(gr*.58)|0},${gr},${(gr*.5)|0},.94)`;
-        c.beginPath(); c.arc(x,y,s,0,6.28); c.fill();
-        c.fillStyle='rgba(150,186,110,.26)'; c.beginPath(); c.arc(x-s*.32,y-s*.36,s*.46,0,6.28); c.fill();
-      }
+      g.fillStyle='rgba(34,48,30,.5)'; shape(g,f,1); g.fill();   // forest floor
     }
   }
+
+  // roads, yards and wells: the things that make a village read as lived in
+  for(const p of props){
+    if(p.kind==='road'){
+      g.save(); g.translate(p.x,p.y); g.rotate(p.a);
+      g.fillStyle='rgba(124,108,76,.45)'; g.fillRect(-p.len/2,-p.w/2,p.len,p.w);
+      g.strokeStyle='rgba(66,56,38,.38)'; g.lineWidth=1.5;
+      g.beginPath(); g.moveTo(-p.len/2,-p.w/2); g.lineTo(p.len/2,-p.w/2);
+      g.moveTo(-p.len/2,p.w/2);  g.lineTo(p.len/2,p.w/2);  g.stroke();
+      g.strokeStyle='rgba(88,74,48,.34)'; g.lineWidth=2.6;            // cart ruts
+      g.beginPath(); g.moveTo(-p.len/2,-p.w*.19); g.lineTo(p.len/2,-p.w*.19);
+      g.moveTo(-p.len/2,p.w*.19); g.lineTo(p.len/2,p.w*.19); g.stroke();
+      g.restore();
+    } else if(p.kind==='yard'){
+      g.save(); g.translate(p.x,p.y); g.rotate(p.a);
+      g.fillStyle='rgba(122,112,78,.3)';
+      g.beginPath(); g.ellipse(0,0,p.rx,p.ry,0,0,6.28); g.fill();
+      g.strokeStyle='rgba(74,62,40,.55)'; g.lineWidth=1.9;            // post and rail
+      g.setLineDash([5,7]);
+      g.beginPath(); g.ellipse(0,0,p.rx,p.ry,0,0,6.28); g.stroke();
+      g.setLineDash([]);
+      g.restore();
+    } else if(p.kind==='well'){
+      g.fillStyle='rgba(38,34,26,.5)';  g.beginPath(); g.arc(p.x,p.y,p.r+2.5,0,6.28); g.fill();
+      g.fillStyle='rgba(142,134,114,.9)'; g.beginPath(); g.arc(p.x,p.y,p.r,0,6.28); g.fill();
+      g.fillStyle='rgba(20,18,14,.85)'; g.beginPath(); g.arc(p.x,p.y,p.r*.55,0,6.28); g.fill();
+    }
+  }
+
+  // the canopy is painted from the real trunks, so felling one can erase it
+  for(const t of trees) paintCrown(c,t);
 
   if(mapType==='beach'){                                  // sea and surf
     const sg=g.createLinearGradient(0,H-190,0,H);
@@ -826,6 +1206,19 @@ function wallBlocks(x,y,team){
 }
 const blocked=(x,y)=>solid(x,y)||wallBlocks(x,y);
 const blockedFor=(x,y,foot,team)=>solidFor(x,y,foot)||wallBlocks(x,y,team);
+// The nearest standable point to one that is not. Note that BUILD stops vehicles
+// and guns but not men, who garrison houses, so what counts as standable depends
+// on who is asking. Rings outward and takes the first opening; no randomness, so
+// it is safe to call from the seeded path.
+function freeSpot(x,y,foot,team){
+  if(!blockedFor(x,y,foot,team)) return {x,y};
+  for(let r=TG;r<=TG*6;r+=TG*.7)
+    for(let a=0;a<12;a++){
+      const ang=a*.5236, nx=x+Math.cos(ang)*r, ny=y+Math.sin(ang)*r;
+      if(!blockedFor(nx,ny,foot,team)) return {x:nx,y:ny};
+    }
+  return {x,y};                                   // sealed in: the escape hatch will deal with it
+}
 function nearestWall(x,y,team,r){
   let best=null,bd=r;
   for(let i=0;i<walls.length;i++){
@@ -916,9 +1309,14 @@ function makeSquad(team,type,x,y,count){
   const sq={id:nextId++,team,type,t,fx:x,fy:y,facing:team==='blue'?0:Math.PI,
     formation:'line',order:{kind:'hold'},initial:n,alive:n,legion:0,cost:unitCost(type),
     routed:false,moraleT:rnd(0,1),disengage:0,crossT:0,crossing:false,crossWide:false,seen:false,seenT:0,soldiers:[],gone:false,fw:0,fd:0,flag:rnd(0,6.28),slide:0};
+  // A formation is anchored on open ground, but its slots fan out from there and
+  // can land inside a house, a bunker or a cliff. For a vehicle or a gun that is
+  // a permanent trap, so every slot is nudged clear as it is filled.
+  const foot=!t.vehicle&&t.kind!=='siege';
   for(let i=0;i<n;i++){
     slotInto(sq,i);
-    sq.soldiers.push({sq,x:SX+rnd(-3,3),y:SY+rnd(-3,3),hp:t.hp,max:t.hp,alive:true,
+    const pos=freeSpot(SX+rnd(-3,3),SY+rnd(-3,3),foot,team);
+    sq.soldiers.push({sq,x:pos.x,y:pos.y,hp:t.hp,max:t.hp,alive:true,
       cd:rnd(0,t.cd),tgt:null,wall:null,seek:rnd(0,.5),charge:false,idx:i,ang:sq.facing,step:rnd(0,6.28),jam:0,
       hull:sq.facing,turret:sq.facing,rec:0,trk:0,kick:0,v:rnd(-1,1),moved:0,
       sp:0,ramp:0,crowd:0});
@@ -1159,6 +1557,8 @@ function detonate(x,y,dmg,splash,team,av){
     const d=Math.max(0,dist(b.x,b.y,x,y)-Math.max(b.w,b.h)*.4);
     if(d<splash+10) hurtBuilding(b,dmg*(1-d/(splash+10))*2.6);
   }
+  for(const t of treesNear(x,y,splash*.85)) fellTree(t,Math.atan2(t.y-y,t.x-x));
+  noteGunfire(x,y); killCivsNear(x,y,splash*.9);
   crater(x,y,clamp(splash*.42,7,42));
   burst(x,y,10,'dust'); burst(x,y,9,'fireball'); burst(x,y,5,'smoke');
   rings.push({x,y,t:.5,max:.5,r:splash*.5,to:splash*2.4});     // shockwave
@@ -1376,6 +1776,12 @@ function stepSquad(sq,dt){
 function stepSoldier(s,dt){
   if(!s.alive) return;
   s.ramp=0;                                       // cleared by accel(); see the tail
+  // Inside something it should not be in: get clear first, orders can wait.
+  if(escapeSolid(s,dt)){
+    s.sp=0; separate(s,dt);
+    s.x=clamp(s.x,-90,W+90); s.y=clamp(s.y,10,H-10);
+    return;
+  }
   const px0=s.x,py0=s.y;
   const sq=s.sq,t=sq.t,flags=t.air?0:terrainAt(s.x,s.y);
   AIRMOVE=!!t.air;
@@ -1586,15 +1992,48 @@ function move(s,dx,dy){
   if(s.sq.t.air){ s.x+=dx; s.y+=dy; return true; }      // nothing on the ground stops it
   const foot=!s.sq.t.vehicle&&s.sq.t.kind!=='siege',tm=s.sq.team;
   const nx=s.x+dx,ny=s.y+dy;
-  if(!blockedFor(nx,ny,foot,tm)){ s.x=nx; s.y=ny; return true; }
-  const len=Math.hypot(dx,dy);
-  if(len>.01){
-    const p=steerStep(s.x,s.y,Math.atan2(dy,dx),len,foot,tm);
-    if(p){ s.x=p.x; s.y=p.y; return true; }
+  let moved=false;
+  if(!blockedFor(nx,ny,foot,tm)){ s.x=nx; s.y=ny; moved=true; }
+  else {
+    const len=Math.hypot(dx,dy);
+    if(len>.01){
+      const p=steerStep(s.x,s.y,Math.atan2(dy,dx),len,foot,tm);
+      if(p){ s.x=p.x; s.y=p.y; moved=true; }
+    }
+    if(!moved&&!blockedFor(s.x,ny,foot,tm)){ s.y=ny; moved=true; }
+    else if(!moved&&!blockedFor(nx,s.y,foot,tm)){ s.x=nx; moved=true; }
   }
-  if(!blockedFor(s.x,ny,foot,tm)){ s.y=ny; return true; }
-  if(!blockedFor(nx,s.y,foot,tm)){ s.x=nx; return true; }
-  return false;
+  if(moved&&s.sq.t.vehicle){
+    const fl=tGrid[gi(s.x,s.y)];
+    if(fl&WOOD) crushTrees(s);
+    if(fl&FIELD) flattenCrop(s.x,s.y);
+  }
+  return moved;
+}
+// Escaping solid ground. move() only ever tests where a body is going, never
+// where it is, so anything that ended up inside a building, a cliff or a wall
+// found every neighbouring cell blocked as well and was stuck there for good.
+// A vehicle spawned at a base whose footprint clips a bunker is the usual way
+// it happened. This walks it out to the nearest open ground instead.
+//
+// Deliberately bypasses move(): the body is already somewhere it may not be, so
+// the normal rules cannot get it out. Uses no randomness, so lockstep peers all
+// extract the same unit along the same line on the same tick.
+function escapeSolid(s,dt){
+  if(s.sq.t.air) return false;
+  const foot=!s.sq.t.vehicle&&s.sq.t.kind!=='siege',tm=s.sq.team;
+  if(!blockedFor(s.x,s.y,foot,tm)) return false;
+  for(let r=TG*.8;r<=TG*8;r+=TG*.6){
+    for(let a=0;a<16;a++){
+      const ang=a*.3927, nx=s.x+Math.cos(ang)*r, ny=s.y+Math.sin(ang)*r;
+      if(blockedFor(nx,ny,foot,tm)) continue;
+      const step=Math.min(r,Math.max(.8,90*dt));  // shoulder out, do not teleport
+      s.x+=Math.cos(ang)*step; s.y+=Math.sin(ang)*step;
+      s.jam=0;
+      return true;
+    }
+  }
+  return false;                                   // sealed in on every side: nothing to be done
 }
 function unjam(s,sp,dt){
   s.jam+=dt;
@@ -1625,11 +2064,13 @@ function guide(s,tx,ty){
   } else { GX=tx; GY=ty; }
 }
 function coverMul(x,y,air){
-  if(air) return 1;                          // nothing to hide behind up there
   const f=terrainAt(x,y);
+  if(air) return (f&WOOD)?.6:1;              // only the canopy hides you from the sky
+
   let m=1;
   if(f&TRENCHED) m*=.42;                    // dug in
   if(f&WOOD) m*=.45;
+  if(f&FIELD) m*=.78;                       // standing crops hide you, nothing more
   if(f&STONE) m*=.55;
   if(f&BUILD) m*=.4;
   return m;
@@ -1714,6 +2155,8 @@ function stepShots(dt){
       if(a.pierce<=0){ shots.splice(i,1); continue; }
     }
     if(k>=1){
+      noteGunfire(a.tx,a.ty);
+      killCivsNear(a.tx,a.ty,a.splash>0?0:7);        // small arms catch whoever is standing there
       if(a.splash>0){
         if(a.stone&&!a.stone.dead) hurtCastle(a.stone,a.dmg*3.2);
         detonate(a.tx,a.ty,a.dmg,a.splash,a.team,a.av);
@@ -2276,6 +2719,7 @@ function stepWeather(dt){
   }
 }
 function stepAmbient(dt){
+  stepFalling(dt); stepCivs(dt);
   wind.a+=Math.sin(clock*.13)*dt*.05;
   sun+=dt*.012;
   const wx=Math.cos(wind.a)*wind.v,wy=Math.sin(wind.a)*wind.v;
@@ -2395,6 +2839,7 @@ function stateHash(){
     if(!s2.alive) continue;
     mix(s2.x*2); mix(s2.y*2); mix(s2.hp);
   }
+  mix(treesDown);                            // felled trees change cover: simulation state
   mix(seed());
   return h>>>0;
 }
@@ -3144,7 +3589,20 @@ function draw(){
     }
   }
   drawBuildings();
+  drawCivs();                                         // under the canopy, over the ground
   ctx.drawImage(canopy,Math.sin(clock*.5+wind.a)*2.4*wind.v,Math.cos(clock*.37)*1.5*wind.v,W,H);
+  for(const t of falling){                            // crowns still on their way down
+    if(t.x<vx0-40||t.x>vx1+40||t.y<vy0-40||t.y>vy1+40) continue;
+    const k=1-t.fall;
+    ctx.save();
+    ctx.translate(t.x,t.y); ctx.rotate(t.fa);
+    ctx.translate(t.s*2.1*t.fall*.5,0); ctx.scale(1,Math.max(.12,k));
+    ctx.globalAlpha=.55+.45*k;
+    ctx.translate(-t.x,-t.y);
+    paintCrown(ctx,t);
+    ctx.restore();
+  }
+  ctx.globalAlpha=1;
   if(quality){
     ctx.strokeStyle='rgba(28,26,20,.5)'; ctx.lineWidth=1.4;
     for(const b of birds){
@@ -4120,6 +4578,13 @@ try{ window.__lvl=(t,n)=>{ lvl[t]=n; buildPalette(); };
      window.__works=()=>{ let tr=0,wi=0; for(let i=0;i<tGrid.length;i++){ if(tGrid[i]&TRENCHED) tr++; if(tGrid[i]&WIRED) wi++; }
        return {walls:walls.filter(w=>!w.dead&&!w.rubble).length,mines:mines.length,trenchCells:tr,wireCells:wi}; };
      window.__rank=(l)=>rankOf(l).name;
+     window.__stuck=()=>{                        // bodies standing where they may not stand
+       const out={live:0,inSolid:0,byKind:{}};
+       for(const s of soldiers){ if(!s.alive||s.sq.t.air) continue; out.live++;
+         const foot=!s.sq.t.vehicle&&s.sq.t.kind!=='siege';
+         if(blockedFor(s.x,s.y,foot,s.sq.team)){ out.inSolid++;
+           out.byKind[s.sq.type]=(out.byKind[s.sq.type]||0)+1; } }
+       return out; };
      window.__overlap=()=>{                      // are bodies standing inside each other?
        let live=0,pairs=0,worst=0;
        const a=soldiers.filter(s=>s.alive); live=a.length;
@@ -4130,6 +4595,22 @@ try{ window.__lvl=(t,n)=>{ lvl[t]=n; buildPalette(); };
        return {live,pairs,worstFrac:+worst.toFixed(3)}; };
      window.__diff=(d)=>{ diff=d; return dset(); };
      window.__cap=(v)=>{ capChoice=v; buildCapPick&&buildCapPick(); return capOf('blue'); };
+     window.__trees=()=>{ let wc=0; for(let i=0;i<woodN.length;i++) if(woodN[i]>0) wc++;
+       return {total:trees.length,down:treesDown,falling:falling.length,woodCells:wc}; };
+     window.__fell=(x,y,r)=>{ const l=treesNear(x,y,r).slice();
+       for(const t of l) fellTree(t,0); return l.length; };
+     window.__wood=(x,y)=>!!(terrainAt(x,y)&WOOD);
+     window.__aTree=()=>{ for(const t of trees) if(!t.dead) return {x:t.x,y:t.y,s:t.s}; return null; };
+     window.__land=()=>{ let fc=0; for(let i=0;i<tGrid.length;i++) if(tGrid[i]&FIELD) fc++;
+       const kinds={}; for(const p of props) kinds[p.kind]=(kinds[p.kind]||0)+1;
+       const ft={}; for(const f of feats) ft[f.type]=(ft[f.type]||0)+1;
+       const rots=new Set(buildings.filter(b=>b.home).map(b=>b.rot.toFixed(3)));
+       return {props:kinds,feats:ft,fieldCells:fc,homes:buildings.filter(b=>b.home).length,
+               barns:buildings.filter(b=>b.barn).length,distinctHouseAngles:rots.size}; };
+     window.__civs=()=>{ const st={}; for(const c of civs) if(c.alive) st[c.st]=(st[c.st]||0)+1;
+       return {alive:civs.filter(c=>c.alive).length,farmers:civs.filter(c=>c.alive&&c.job==='farmer').length,states:st}; };
+     window.__shoot=(x,y,r)=>{ noteGunfire(x,y); killCivsNear(x,y,r||60); return civs.filter(c=>c.alive).length; };
+     window.__killAllCivs=()=>{ for(const c of civs) c.alive=false; return 0; };
      window.__hash=()=>stateHash();
      window.__tick=(n)=>{ for(let i=0;i<n;i++) tick(SIM); return stateHash(); };
      window.__seed=(v)=>{ matchSeed=v; return matchSeed; };
