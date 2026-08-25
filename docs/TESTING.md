@@ -3,7 +3,7 @@
 There is one test command and it is not a unit-test runner:
 
 ```bash
-npm test          # build the headless bundle, then run all 18 checks
+npm test          # build the headless bundle, then run all 39 checks
 npm run test:fast # shorter match runs, for a tight loop
 npm run test:sim  # one determinism probe, prints hashes as JSON
 npm run test:crowd # how many bodies are standing inside each other
@@ -23,7 +23,7 @@ the harness can no longer read the code straight out of `index.html`. It loads
 The body markup still comes from the real `index.html`, so the HUD the tests
 click on is the HUD that ships.
 
-## The four checks
+## The seven checks
 
 1. **LOAD** — the bundle evaluates with no error, the debug hooks are installed,
    the palette is built, and 30 idle frames run on the start screen. This is the
@@ -35,6 +35,21 @@ click on is the HUD that ships.
 4. **DETERMINISM** — two separate Node processes run the same seed for the same
    number of ticks and must agree on `stateHash()`. Driven by tick count alone,
    never by wall clock.
+5. **WORLD** — trees, villages and civilians hold together, and killing every
+   civilian leaves `stateHash()` untouched.
+6. **FEEL** — the camera punches and settles; a finger can select several units.
+7. **SAVES** — a battle is saved in one Node process and loaded in another, and
+   must come back on the same `stateHash()` and then run on identically. Also
+   the slot limit, and that a record this build cannot read is refused rather
+   than half-loaded.
+
+## Why saves are driven by tick count too
+
+The frame loop accumulates real elapsed time, so how many ticks a frame runs
+depends on the absolute wall clock. Two instances at different clock readings
+will eventually run a different number of ticks in the same frame and drift
+apart, save or no save. `test/saverun.js` therefore drives by tick count, the
+same way `test/simrun.js` does.
 
 ## The rule when you change the engine
 

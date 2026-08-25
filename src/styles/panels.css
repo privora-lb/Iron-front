@@ -181,3 +181,44 @@ h1 small {
 #passVeil h1.redc {
   color: var(--red-lt);
 }
+.saves {
+  display: grid;
+  gap: 4px;
+  margin-top: 4px;
+  max-height: 46vh;
+  overflow: auto;
+}
+.slot {
+  display: flex;
+  gap: 4px;
+}
+.slot > button:first-child {
+  flex: 1 1 auto;
+  text-align: left;
+  padding: 6px 8px;
+  text-transform: none;
+}
+.slot b {
+  display: block;
+  font-family: 'Cinzel', serif;
+  font-size: 11px;
+  color: #f0e3c2;
+}
+.slot span {
+  display: block;
+  font-size: 9.5px;
+  color: var(--parch-dim);
+  line-height: 1.2;
+}
+.slot .kill {
+  flex: 0 0 auto;
+  width: 30px;
+  padding: 0;
+  font-size: 15px;
+  color: var(--red-lt);
+}
+.saves .none {
+  font-size: 11.5px;
+  color: var(--parch-dim);
+  padding: 8px 4px;
+}

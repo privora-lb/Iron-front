@@ -71,6 +71,7 @@
       <button class="leg" data-leg="7">7</button>
       <button class="leg" data-leg="8">8</button>
       <button class="leg" data-leg="9">9</button>
+      <button id="selBtn" title="Drag to select">Select</button>
       <button id="bind">Bind</button>
       <button data-o="all">All</button>
       <button id="done" style="display:none">End orders</button>
@@ -129,6 +130,7 @@
         <p class="brief">Rothal has crossed the frontier. Valenmark holds the ground — every block you keep is your country, every block you lose is theirs.</p>
         <div class="rule"></div>
         <p>Blue holds the ground, Red must take it. There is no clock — the war runs until one force is broken or its headquarters is overrun. Kills earn coins, and you can buy reinforcements while the shooting goes on.</p>
+        <button class="big" id="sLoad" style="display:none">Load a saved battle</button>
         <div class="lbl">COMMANDER</div>
         <input id="pname" maxlength="18" placeholder="Your name" autocomplete="off">
         <p class="profstats" id="profStats"></p>
@@ -143,6 +145,9 @@
         <div class="lbl">DIFFICULTY</div>
         <div class="opts" id="diffPick" style="grid-template-columns:repeat(4,1fr);gap:3px"></div>
         <p class="mapnote" id="diffNote"></p>
+        <div class="lbl">HOUR OF THE ATTACK</div>
+        <div class="opts" id="hourPick" style="grid-template-columns:repeat(4,1fr);gap:3px"></div>
+        <p class="mapnote" id="hourNote"></p>
         <div class="lbl">FIELD LIMIT — FIGHTERS A SIDE</div>
         <div class="opts five" id="capPick"></div>
         <div class="lbl">STARTING COINS · TOTAL WAR HAS NONE OF THE LIMITS</div>
@@ -169,9 +174,13 @@
         <div class="rule"></div>
         <button class="big" id="mResume">Resume</button>
         <button class="big" id="mRestart">Restart this battle</button>
+        <button class="big" id="mSave">Save this battle</button>
+        <button class="big" id="mLoad">Load a saved battle</button>
         <button class="big" id="mNew">Leave — new war</button>
         <button class="big" id="mQuality">Graphics: high</button>
         <button class="big" id="mSound">Sound: on</button>
+        <button class="big" id="mShake">Screen shake: on</button>
+        <button class="big" id="mHaptics">Vibration: on</button>
         <p id="menuStat" style="margin-top:12px"></p>
       </div>
     </div>
@@ -207,6 +216,16 @@
         </div>
         <button class="big" id="again">Deploy again</button>
         <button class="big" id="shareEnd">Share this game</button>
+      </div>
+    </div>
+    <div class="veil" id="saveVeil" style="display:none">
+      <div class="panel">
+        <h1 id="saveTitle">Saved battles<small>kept on this device</small></h1>
+        <div class="rule"></div>
+        <p id="saveNote"></p>
+        <div class="saves" id="saveList"></div>
+        <button class="big" id="saveNew" style="display:none">Save to a new slot</button>
+        <button class="big" id="saveClose">Back</button>
       </div>
     </div>
   </div>
