@@ -687,12 +687,39 @@ function layTrunk(t) {
 // One crown, drawn into whichever layer is asking for it.
 function paintCrown(c, t) {
   const s = t.s, gr = t.gr;
-  c.fillStyle = 'rgba(12,20,10,.4)';
-  c.beginPath(); c.ellipse(t.x + 4, t.y + 5, s * .95, s * .6, 0, 0, 6.28); c.fill();
-  c.fillStyle = `rgba(${(gr * .58) | 0},${gr},${(gr * .5) | 0},.94)`;
-  c.beginPath(); c.arc(t.x, t.y, s, 0, 6.28); c.fill();
-  c.fillStyle = 'rgba(150,186,110,.26)';
-  c.beginPath(); c.arc(t.x - s * .32, t.y - s * .36, s * .46, 0, 6.28); c.fill();
+  // A crown is not a disc. One flat circle with a highlight on it is what makes
+  // a wood read as clip art, so this builds the canopy out of overlapping lobes
+  // in three tones: shadowed underside, body, and the few leaves the light
+  // actually reaches. The wobble is taken from where the tree stands rather than
+  // from a random number, so the same wood bakes identically on every machine.
+  // All of it is baked once into the canopy layer, so the extra geometry costs
+  // nothing per frame.
+  const w = (t.x * 0.7 + t.y * 1.3) % 6.28318;
+  const dark = `rgba(${(gr * .3) | 0},${(gr * .66) | 0},${(gr * .28) | 0},.95)`;
+  const mid = `rgba(${(gr * .58) | 0},${gr},${(gr * .5) | 0},.95)`;
+  const lit = `rgba(${(gr * .8) | 0},${Math.min(255, (gr * 1.2) | 0)},${(gr * .64) | 0},.95)`;
+
+  c.fillStyle = 'rgba(10,16,9,.38)';                 // shadow on the ground
+  c.beginPath(); c.ellipse(t.x + s * .4, t.y + s * .48, s * 1.02, s * .62, 0, 0, 6.28); c.fill();
+
+  c.fillStyle = dark;                                // the ragged outer mass
+  for (let i = 0; i < 5; i++) {
+    const a = w + i * 1.2566;
+    c.beginPath();
+    c.arc(t.x + Math.cos(a) * s * .4, t.y + Math.sin(a) * s * .4, s * .63, 0, 6.28);
+    c.fill();
+  }
+  c.fillStyle = mid;                                 // the body of the canopy
+  for (let i = 0; i < 4; i++) {
+    const a = w * 1.7 + i * 1.5708;
+    c.beginPath();
+    c.arc(t.x + Math.cos(a) * s * .25, t.y + Math.sin(a) * s * .25, s * .53, 0, 6.28);
+    c.fill();
+  }
+  c.fillStyle = lit;                                 // where the sun lands
+  c.beginPath(); c.arc(t.x - s * .26, t.y - s * .3, s * .45, 0, 6.28); c.fill();
+  c.fillStyle = 'rgba(198,220,158,.2)';
+  c.beginPath(); c.arc(t.x - s * .36, t.y - s * .42, s * .24, 0, 6.28); c.fill();
 }
 
 // Toppling is animation only, so it rides the cosmetic clock.
@@ -3722,19 +3749,37 @@ function draw(){
       ctx.beginPath(); ctx.moveTo(rx-9,y); ctx.quadraticCurveTo(rx,y-2.4,rx+9,y); ctx.stroke();
     }
   }
-  {                                              // who holds which block
+  {
+    // Who holds which block. This used to outline all hundred and sixty of them
+    // every frame, which laid a perfect lattice over the battlefield and made
+    // the whole thing read as a board rather than as ground. Only the FRONTIER
+    // is drawn now — the edges where the holding actually changes hands — so
+    // what you see is a front line, and the interior is a wash with no border
+    // to give the grid away.
     const bw=W/TX,bh=H/TY;
     for(let gy=0;gy<TY;gy++) for(let gx=0;gx<TX;gx++){
       const i=gy*TX+gx,o=terrOwn[i];
+      if(!o) continue;                            // nobody's: leave the ground alone
       const x0=gx*bw,y0=gy*bh;
       if(x0+bw<vx0||x0>vx1||y0+bh<vy0||y0>vy1) continue;
       const grip=Math.abs(terrHold[i]);
-      ctx.fillStyle=o===1?'rgba(76,127,191,'+(.05+grip*.07)+')'
-                  :o===2?'rgba(190,59,46,'+(.05+grip*.07)+')':'rgba(120,116,96,.05)';
+      ctx.fillStyle=(o===1?'rgba(76,127,191,':'rgba(190,59,46,')+(.035+grip*.05)+')';
       ctx.fillRect(x0,y0,bw,bh);
-      ctx.strokeStyle=o===1?'rgba(120,168,232,.20)':o===2?'rgba(226,120,104,.20)':'rgba(150,144,120,.12)';
-      ctx.lineWidth=2/cam.s; ctx.strokeRect(x0+1,y0+1,bw-2,bh-2);
     }
+    ctx.lineWidth=2.2/cam.s; ctx.lineCap='round';
+    for(let gy=0;gy<TY;gy++) for(let gx=0;gx<TX;gx++){
+      const i=gy*TX+gx,o=terrOwn[i];
+      if(!o) continue;
+      const x0=gx*bw,y0=gy*bh;
+      if(x0+bw<vx0||x0>vx1||y0+bh<vy0||y0>vy1) continue;
+      ctx.strokeStyle=o===1?'rgba(120,168,232,.30)':'rgba(226,120,104,.30)';
+      // only the sides facing someone else, or the open map edge
+      if(gx===0||terrOwn[i-1]!==o){ ctx.beginPath(); ctx.moveTo(x0,y0); ctx.lineTo(x0,y0+bh); ctx.stroke(); }
+      if(gx===TX-1||terrOwn[i+1]!==o){ ctx.beginPath(); ctx.moveTo(x0+bw,y0); ctx.lineTo(x0+bw,y0+bh); ctx.stroke(); }
+      if(gy===0||terrOwn[i-TX]!==o){ ctx.beginPath(); ctx.moveTo(x0,y0); ctx.lineTo(x0+bw,y0); ctx.stroke(); }
+      if(gy===TY-1||terrOwn[i+TX]!==o){ ctx.beginPath(); ctx.moveTo(x0,y0+bh); ctx.lineTo(x0+bw,y0+bh); ctx.stroke(); }
+    }
+    ctx.lineCap='butt';
   }
   ctx.setLineDash([16,14]); ctx.lineWidth=2.4/cam.s;
   ctx.strokeStyle='rgba(201,162,39,.14)';
