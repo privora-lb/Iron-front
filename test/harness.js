@@ -23,7 +23,8 @@ const path = require('path');
 const { execFileSync } = require('child_process');
 const { loadGame } = require('./dom.js');
 
-const FAST = process.argv.includes('--fast');
+const BR = String.fromCharCode(10);
+ const FAST = process.argv.includes('--fast');
 const MAPS = ['villages', 'mountains', 'beach', 'city', 'desert'];
 const MATCH_FRAMES = FAST ? 400 : 1800;
 const CHECKPOINTS = FAST ? [120, 300] : [300, 600, 1200, 1800];
@@ -381,6 +382,84 @@ function world(map, budget) {
   if (problems.length) bad('corridors and the river come from the terrain', problems.join('\n'));
   else ok('corridors and the river come from the terrain',
     'lanes ' + ra.lanes + ' vs ' + rb.lanes + ', river wanders ' + (ra.riverSpan[1] - ra.riverSpan[0]));
+}
+
+/* ------------------------------------------------------------------ */
+/* 6. FEEL - what the game does in the hand                            */
+/* ------------------------------------------------------------------ */
+head('6. FEEL');
+
+function touch(g, x, y, type) {
+  g.doc.getElementById('cv').dispatchEvent({
+    type, touches: type === 'touchend' ? [] : [{ clientX:x, clientY:y }],
+    preventDefault() {}, stopPropagation() {},
+  });
+}
+function battle(budget) {
+  const g = loadGame({ quiet: true });
+  g.all('#mapPick [data-map="villages"]')[0].click();
+  g.hook('seed')(4242);
+  g.all('#startVeil [data-budget="' + (budget || 999999) + '"]')[0].click();
+  g.el('autoDep').click();
+  g.el('startBattle').click();
+  g.frames(120);
+  return g;
+}
+
+// Camera shake must punch and settle. It used to SUM every blast into a running
+// total capped at 14px, which pinned there in any real battle and read as a fast
+// vibration; one damped impulse means the biggest nearby blast wins instead.
+{
+  const g = battle();
+  g.frames(400);
+  let peak = 0, still = 0;
+  const N = 600;
+  for (let i = 0; i < N; i++) {
+    g.frame();
+    const v = g.hook('shake')();
+    if (v > peak) peak = v;
+    if (v < 0.05) still++;
+  }
+  const problems = [];
+  if (peak > 7) problems.push('shake peaked at ' + peak.toFixed(1) + 'px - too violent for a phone');
+  if (still < N * 0.1) problems.push('the camera is never at rest (' + still + '/' + N + ' frames) - it is vibrating');
+  if (problems.length) bad('screen shake punches and settles', problems.join(BR));
+  else ok('screen shake punches and settles',
+    'peak ' + peak.toFixed(1) + 'px, still for ' + Math.round(still / N * 100) + '% of frames');
+}
+
+// A finger has to be able to do what a mouse drag does. Quick drag still pans;
+// hold-then-drag, or the Select button, draws a selection box instead.
+{
+  const problems = [];
+  {                                             // a quick drag still pans the camera
+    const g = battle();
+    const before = g.hook('cam')();
+    touch(g, 300, 300, 'touchstart'); g.frame();
+    touch(g, 600, 400, 'touchmove'); g.frame();
+    touch(g, 0, 0, 'touchend');
+    const after = g.hook('cam')();
+    if (Math.abs(after.x - before.x) < 50) problems.push('a quick drag no longer pans the camera');
+    if (g.hook('nsel')() !== 0) problems.push('a quick drag selected units - panning is broken');
+  }
+  {                                             // hold, then drag: a selection box
+    const g = battle();
+    touch(g, 60, 120, 'touchstart');
+    g.frames(30);                               // half a second of stillness
+    touch(g, 1220, 700, 'touchmove'); g.frame();
+    touch(g, 0, 0, 'touchend');
+    if (g.hook('nsel')() < 2) problems.push('hold-then-drag selected ' + g.hook('nsel')() + ' units, expected several');
+  }
+  {                                             // Select button: drag straight away
+    const g = battle();
+    g.el('selBtn').click();
+    touch(g, 60, 120, 'touchstart'); g.frame();
+    touch(g, 1220, 700, 'touchmove'); g.frame();
+    touch(g, 0, 0, 'touchend');
+    if (g.hook('nsel')() < 2) problems.push('Select mode selected ' + g.hook('nsel')() + ' units, expected several');
+  }
+  if (problems.length) bad('a finger can select several units', problems.join(BR));
+  else ok('a finger can select several units', 'quick drag pans, hold-drag and Select mode box-select');
 }
 
 /* ------------------------------------------------------------------ */

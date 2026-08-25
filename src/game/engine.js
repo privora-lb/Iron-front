@@ -106,7 +106,7 @@ function stepTerritory(dt){
   }
 }
 let bodies=[],bases=[],weather=[],rings=[],plumes=[];
-let glowSprite=null,shake=0,wx=0,wyv=0,sky='clear';
+let glowSprite=null,shakeAmp=0,shakeAge=0,wx=0,wyv=0,sky='clear';
 function makeGlow(){
   glowSprite=document.createElement('canvas'); glowSprite.width=glowSprite.height=128;
   const g=glowSprite.getContext('2d');
@@ -123,15 +123,30 @@ function glow(x,y,r,a,tint){
   ctx.restore();
 }
 // a shell landing shoves the camera
+const shakeNow=()=>shakeAmp>0?shakeAmp*Math.exp(-shakeAge*8.5):0;
 function kick(x,y,power){
   const sx=w2sx(x),sy=w2sy(y),w=cv.width/dpr,h=cv.height/dpr;
-  if(sx<-200||sy<-200||sx>w+200||sy>h+200) return;
-  shake=Math.min(14,shake+power);
+  const dx=(sx-w*.5)/(w*.5),dy=(sy-h*.5)/(h*.5),d=Math.hypot(dx,dy);
+  if(d>1.7) return;                                // too far off centre to feel
+  const fall=1-d/1.7;
+  const amp=Math.min(6.5,power*.55)*fall*fall;     // near blasts shake, distant ones do not
+  if(amp<=shakeNow()) return;                      // the bigger blast wins; they never stack
+  shakeAmp=amp; shakeAge=0;
+  hapticKick(amp);
 }
+// A short pulse in the hand on the same impulse as the camera, rate limited so
+// it can never become a continuous buzz.
+let hapT=-9;
+function hapticKick(amp){
+  if(!prof.haptics||amp<1.1||clock-hapT<.3) return;
+  hapT=clock;
+  try{ tap(amp>4?'HEAVY':amp>2.2?'MEDIUM':'LIGHT'); }catch(e){}
+}
+function tapLight(){ if(prof.haptics){ try{ tap('LIGHT'); }catch(e){} } }
 let clouds=[],birds=[],mines=[],wind={a:0.7,v:1};   // real values set when the ground is generated
 let phase='start',mode='ai',paused=false;
 let budget=300,spent={blue:0,red:0},earned={blue:0,red:0},depTeam='blue',depTime=180,troopSize=1;   // three minutes to plan and build
-let prof={name:'Commander',games:0,wins:0,losses:0,best:0,hiLvl:1,kills:0};
+let prof={name:'Commander',games:0,wins:0,losses:0,best:0,hiLvl:1,kills:0,shake:true,haptics:true};
 function loadProf(){
   try{
     const raw=window.localStorage&&localStorage.getItem('ironfront.profile');
@@ -2916,6 +2931,8 @@ function openMenu(){
     +Math.round((ownCastle('red')?ownCastle('red').hp/ownCastle('red').max:0)*100)+'% · '+Math.round(1000/Math.max(frameMs,1))+' fps';
   el('mQuality').textContent='Graphics: '+(quality?'high':'fast');
   el('mSound').textContent='Sound: '+(isMuted()?'off':'on');
+  el('mShake').textContent='Screen shake: '+(prof.shake===false?'off':'on');
+  el('mHaptics').textContent='Vibration: '+(prof.haptics?'on':'off');
   suspendAudio();
 }
 function closeMenu(){ paused=false; el('menuVeil').style.display='none'; resumeAudio(); }
@@ -3015,7 +3032,7 @@ function stepAmbient(dt){
 }
 function tick(dt){
   stepAmbient(dt); stepWeather(dt);
-  if(shake>0) shake=Math.max(0,shake-dt*26);
+  if(shakeAmp>0){ shakeAge+=dt; if(shakeAge>1.1){ shakeAmp=0; shakeAge=0; } }
   for(let i=rings.length-1;i>=0;i--){ const r=rings[i]; r.t-=dt; if(r.t<=0) rings.splice(i,1); }
   for(let i=plumes.length-1;i>=0;i--){
     const q=plumes[i]; q.t-=dt;
@@ -3200,7 +3217,8 @@ function draw(){
   const a=s2w(0,0),b=s2w(w,h);
   vx0=a.x-40; vy0=a.y-40; vx1=b.x+40; vy1=b.y+40;
   listen((vx0+vx1)/2,(vy0+vy1)/2,(vx1-vx0)/2,(vy1-vy0)/2);   // sound is mixed around the view
-  const shx=shake?Math.sin(clock*61)*shake:0, shy=shake?Math.cos(clock*47)*shake:0;
+  const sk=prof.shake===false?0:shakeNow();       // ~5Hz thump, not a 9Hz buzz
+  const shx=sk?Math.sin(shakeAge*32)*sk:0, shy=sk?Math.cos(shakeAge*27)*sk*.72:0;
   ctx.setTransform(cam.s*dpr,0,0,cam.s*dpr,(cam.x+shx)*dpr,(cam.y+shy)*dpr);
   ctx.drawImage(ground,0,0,W,H);
   ctx.drawImage(decal,0,0,W,H);
@@ -4509,7 +4527,8 @@ function iconDataURL(key,size,col){
 
 /* ===================== input ===================== */
 const box={on:false,x0:0,y0:0,x1:0,y1:0};
-let ptr={down:false,moved:false,touch:false,sx:0,sy:0,pan:false,lx:0,ly:0},pinch=null,lastTap=0;
+let selectMode=false;      // Select button: one finger draws a box instead of panning
+let ptr={down:false,moved:false,touch:false,sx:0,sy:0,pan:false,lx:0,ly:0},pinch=null,lastTap=-9,lastSq=null;
 const canvasPos=e=>{ const r=cv.getBoundingClientRect(); return {x:e.clientX-r.left,y:e.clientY-r.top}; };
 const inMini=(px,py)=>Math.hypot(px-mini.cx,py-mini.cy)<=mini.r;
 // Picking men off the field ends buy mode: the card lights up while you are
@@ -4534,7 +4553,7 @@ function onDown(e){
     ptr.down=false; return;
   }
   const touch=!!e.touches,p=canvasPos(touch?e.touches[0]:e);
-  ptr={down:true,moved:false,touch,sx:p.x,sy:p.y,
+  ptr={down:true,moved:false,touch,sx:p.x,sy:p.y,t0:clock,
     pan:touch||e.button===2||e.button===1,rb:!touch&&e.button===2,lx:p.x,ly:p.y};
   if(building&&!ptr.rb&&!inMini(p.x,p.y)){          // drag out the line of the work
     const w0=s2w(p.x,p.y);
@@ -4556,7 +4575,16 @@ function onMove(e){
   if(!ptr.down) return;
   const p=canvasPos(e.touches?e.touches[0]:e);
   const slop=ptr.touch?16:8;
-  if(!ptr.moved&&Math.hypot(p.x-ptr.sx,p.y-ptr.sy)>slop) ptr.moved=true;
+  if(!ptr.moved&&Math.hypot(p.x-ptr.sx,p.y-ptr.sy)>slop){
+    ptr.moved=true;
+    // held still, then dragged - that means "draw a box", not "pan the camera"
+    if(ptr.touch&&phase==='battle'&&!drawing&&!inMini(ptr.sx,ptr.sy)
+       &&(selectMode||clock-ptr.t0>.26)){
+      ptr.pan=false; box.on=true;
+      box.x0=box.x1=ptr.sx; box.y0=box.y1=ptr.sy;
+      tapLight();
+    }
+  }
   if(drawing){ const w1=s2w(p.x,p.y); drawing.x1=w1.x; drawing.y1=w1.y; }
   else if(ptr.moved&&ptr.pan&&!inMini(ptr.sx,ptr.sy)){ cam.x+=p.x-ptr.lx; cam.y+=p.y-ptr.ly; }
   else if(box.on){ box.x1=p.x; box.y1=p.y; }
@@ -4593,7 +4621,7 @@ function onUp(){
       const sx=w2sx(sq.fx),sy=w2sy(sq.fy);
       return sx>=x0&&sx<=x1&&sy>=y0&&sy<=y1; });
     box.on=false;
-    if(selected.length){ clearBuying(); toast(selected.length+' units selected'); }
+    if(selected.length){ clearBuying(); tapLight(); toast(selected.length+' units selected'); }
     return;
   }
   box.on=false;
@@ -4643,7 +4671,17 @@ function onUp(){
     // rather than dropping a squad on top of the men already standing there.
     const own=pickSquad(w.x,w.y,team);
     if(own&&!own.routed){
-      selected=[own];
+      // tap again on the same unit to take every one of its kind on screen -
+      // the fastest way to gather a force without a mouse
+      if(clock-lastTap<.42&&lastSq===own){
+        selected=squads.filter(q=>!q.gone&&!q.routed&&q.team===team&&q.type===own.type
+          &&q.fx>vx0&&q.fx<vx1&&q.fy>vy0&&q.fy<vy1);
+        tapLight();
+        toast('All '+own.t.name+' on screen · '+selected.length+' units');
+        lastTap=-9; lastSq=null; return;
+      }
+      lastTap=clock; lastSq=own;
+      selected=[own]; tapLight();
       if(clearBuying()) toast(own.t.name+' selected · buying off');
       return;
     }
@@ -4861,6 +4899,13 @@ el('mResume').onclick=closeMenu;
 el('mRestart').onclick=()=>{ closeMenu(); beginGame(budget); };
 el('mNew').onclick=()=>{ closeMenu(); phase='start';
   el('endVeil').style.display='none'; el('startVeil').style.display='flex'; };
+el('selBtn').onclick=()=>{ selectMode=!selectMode;
+  el('selBtn').classList.toggle('on',selectMode);
+  toast(selectMode?'Drag to select · two fingers still pan':'Drag pans again'); };
+el('mShake').onclick=()=>{ prof.shake=prof.shake===false; saveProf();
+  el('mShake').textContent='Screen shake: '+(prof.shake===false?'off':'on'); };
+el('mHaptics').onclick=()=>{ prof.haptics=!prof.haptics; saveProf();
+  el('mHaptics').textContent='Vibration: '+(prof.haptics?'on':'off'); };
 el('mQuality').onclick=()=>{ qualityLock=true; quality=quality?0:1;
   write('gfx',quality?'high':'fast');
   el('mQuality').textContent='Graphics: '+(quality?'high':'fast'); };
@@ -4971,6 +5016,10 @@ try{ window.__lvl=(t,n)=>{ lvl[t]=n; buildPalette(); };
        for(let gy=1;gy<TH-1;gy+=2) for(let gx=1;gx<TW-1;gx+=2) rs+=slopeAt(gx*TG,gy*TG);
        out._map={h:+(rh/hGrid.length).toFixed(3),slope:+(rs/(((TH-2)/2|0)*((TW-2)/2|0))).toFixed(4)};
        return out; };
+     window.__shake=()=>shakeNow();
+     window.__nsel=()=>selected.length;
+     window.__cam=()=>({x:cam.x,y:cam.y,s:cam.s});
+     window.__selMode=(v)=>{ selectMode=!!v; return selectMode; };
      window.__hash=()=>stateHash();
      window.__tick=(n)=>{ for(let i=0;i<n;i++) tick(SIM); return stateHash(); };
      window.__seed=(v)=>{ matchSeed=v; return matchSeed; };
