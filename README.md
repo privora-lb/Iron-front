@@ -21,7 +21,10 @@ larger formations and a bigger command as you climb.
   mortars, rockets, howitzers, MG teams, APCs
 - **Engineers** dig trenches, wire, sandbags and minefields along lines you draw
 - **Five bases a side** to hold and take, plus territory blocks that change hands
-- **Fog of war** over enemy ground; your own half is always clear
+- **Ground that means something:** roads carry armour, mud drags, wire stops
+  men but not tanks, rubble shelters infantry and blocks vehicles
+- **Fog of war** over enemy ground; your own half is always clear — woods and
+  crops conceal, and nobody sees through a hill, a wood or a building
 - **Difficulty:** Easy, Normal, Hard, and Adaptive — which grows stronger every
   minute
 - **Total War** removes every limit
@@ -40,7 +43,7 @@ minimap to jump.
 | `npm run dev`     | Dev server, reachable from a phone on the same network  |
 | `npm run build`   | Production build into `dist/`                           |
 | `npm run preview` | Serve the production build                              |
-| `npm test`        | The headless harness — 39 checks, including determinism |
+| `npm test`        | The headless harness — 44 checks, including determinism |
 | `npm run check`   | Lint, test and build, as CI runs them                   |
 | `npm run icons`   | Regenerate every icon size from the procedural emblem   |
 | `npm run android` | Build, sync and open Android Studio                     |
@@ -53,7 +56,8 @@ index.html            the app shell — markup only
 src/
   main.js             entry: polyfills → native shell → game → service worker
   headless.js         the same engine, bundled for the test harness
-  data/               balance and content as plain values — units, maps, ranks
+  data/               balance and content as plain values — units, maps, ranks, ground
+  world/              the battlefield as data — terrain model, land use
   core/               seeded rng, math, dom, polyfills
   game/engine.js      simulation, renderer, HUD, input (being split up)
   platform/           Capacitor bridge, storage, saved battles, service worker

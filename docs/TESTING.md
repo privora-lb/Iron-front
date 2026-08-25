@@ -3,7 +3,7 @@
 There is one test command and it is not a unit-test runner:
 
 ```bash
-npm test          # build the headless bundle, then run all 39 checks
+npm test          # build the headless bundle, then run all 44 checks
 npm run test:fast # shorter match runs, for a tight loop
 npm run test:sim  # one determinism probe, prints hashes as JSON
 npm run test:crowd # how many bodies are standing inside each other
@@ -23,7 +23,7 @@ the harness can no longer read the code straight out of `index.html`. It loads
 The body markup still comes from the real `index.html`, so the HUD the tests
 click on is the HUD that ships.
 
-## The seven checks
+## The eight checks
 
 1. **LOAD** — the bundle evaluates with no error, the debug hooks are installed,
    the palette is built, and 30 idle frames run on the start screen. This is the
@@ -42,6 +42,12 @@ click on is the HUD that ships.
    must come back on the same `stateHash()` and then run on identically. Also
    the slot limit, and that a record this build cannot read is refused rather
    than half-loaded.
+8. **TERRAIN** — the battlefield model. `test/terrainrun.mjs` imports
+   `src/world/terrain.js` directly, with no DOM and no engine, and asks it
+   about ground laid out by hand: a wood here, a building there, a hill
+   behind. The rest of the section checks a real battle reads the same model —
+   roads carry armour, a collapsed house leaves rubble armour must go round,
+   and the info line says what the simulation is using.
 
 ## Why saves are driven by tick count too
 

@@ -11,6 +11,9 @@ import { UNITS, PAL_ORDER, PERMODEL, SIZE_LVL } from '../data/units.js';
 import { WALL, MINE, WIRE, TRENCH, ANGS, ANGNAME } from '../data/defences.js';
 import { NATION, ROMAN } from '../data/nations.js';
 import { MAPS } from '../data/maps.js';
+import * as T from '../world/terrain.js';
+import { WOOD, MARSH, ROCK, WATER, FORD, STONE, BUILD, SCORCH, CLIFF,
+         WIRED, TRENCHED, FIELD, ROAD, RUBBLE, mobilityOf } from '../world/terrain.js';
 import { MAXLVL, RANKS, rankOf, nextRank, xpNeed } from '../data/ranks.js';
 import { DIFF } from '../data/difficulty.js';
 import { makeLanduse } from '../world/landuse.js';
@@ -257,19 +260,25 @@ function unitCost(k,n){
 /* ===================== terrain grids ===================== */
 const BAKE=.5;
 const TG=22,TW=Math.ceil(W/TG),TH=Math.ceil(H/TG);
-let tGrid=new Uint16Array(TW*TH);          // flags
+// The battlefield itself lives in src/world/terrain.js: what each cell is, how
+// high it stands, how chewed up it is, and every question anyone asks about a
+// position. These are its own arrays under the names the engine has always
+// used, so the ten thousand places that read a grid directly keep working.
+let terrain=T.makeTerrain(W,H,TG);
+let tGrid=terrain.flags;                   // what the cell IS
+let eGrid=terrain.elev;                    // elevation 0..3
+let cGrid=terrain.churn;                   // churn 0..1
+let hGrid=terrain.height;                  // the continuous field the rest comes from
 let tGrid0=null;                           // the same grid as generated: a save diffs against it
-let eGrid=new Uint8Array(TW*TH);          // elevation 0..3
-let cGrid=new Float32Array(TW*TH);        // churn 0..1
 let pGrid=new Uint8Array(TW*TH);          // churn already painted
-const WOOD=1,MARSH=2,ROCK=4,WATER=8,FORD=16,STONE=32,BUILD=64,SCORCH=128,CLIFF=256,WIRED=512,TRENCHED=1024,FIELD=2048;
-const gi=(x,y)=>clamp((y/TG)|0,0,TH-1)*TW+clamp((x/TG)|0,0,TW-1);
-const terrainAt=(x,y)=>tGrid[gi(x,y)];
-const elevAt=(x,y)=>eGrid[gi(x,y)];
-const churnAt=(x,y)=>cGrid[gi(x,y)];
-const solid=(x,y)=>(tGrid[gi(x,y)]&(WATER|BUILD|CLIFF))!==0;
+const gi=(x,y)=>T.idx(terrain,x,y);
+const terrainAt=(x,y)=>T.flagsAt(terrain,x,y);
+const elevAt=(x,y)=>T.elevAt(terrain,x,y);
+const churnAt=(x,y)=>T.churnAt(terrain,x,y);
+const heightAt=(x,y)=>T.heightAt(terrain,x,y);
+const solid=(x,y)=>T.hardAt(terrain,x,y,false);
 // troops on foot can push into a building; anything with an engine cannot
-const solidFor=(x,y,foot)=>(tGrid[gi(x,y)]&(foot?(WATER|CLIFF):(WATER|BUILD|CLIFF)))!==0;
+const solidFor=(x,y,foot)=>T.hardAt(terrain,x,y,foot);
 
 // the river
 const riverXAt=y=>{                        // the channel traced through the low ground
@@ -282,46 +291,16 @@ let AIRMOVE=false;
 const acrossRiver=(x0,y0,x1,y1)=>!AIRMOVE&&hasWater()&&(x0-riverXAt(y0))*(x1-riverXAt(y1))<0;
 
 function groundName(x,y){
-  const f=terrainAt(x,y),e=elevAt(x,y);
+  const f=terrainAt(x,y);
   if(f&WATER) return 'in the river';
   if(f&FORD)  return 'at the ford';
   for(const c of castles) if(!c.dead&&Math.abs(x-c.x)<c.hw+24&&Math.abs(y-c.y)<c.hh+24) return 'at the keep';
-  if(f&CLIFF) return 'against a cliff';
-  if(f&BUILD) return 'inside a building';
-  if(f&STONE) return 'in the village';
-  if(f&SCORCH) return 'on burnt ground';
-  if(f&TRENCHED) return 'dug into a trench';
-  if(f&WIRED) return 'caught in wire';
-  if(f&WOOD)  return 'in the woods';
-  if(f&FIELD) return 'in standing crops';
-  if(f&MARSH) return 'in marsh';
-  if(f&ROCK)  return 'on rocks';
-  if(churnAt(x,y)>.45) return 'in churned mud';
-  if(e>=2) return 'on the height';
-  if(e===1) return 'on the slope';
-  return 'on open ground';
+  return T.describe(terrain,x,y);
 }
-function moveMul(x,y,kind){
-  if(kind==='air') return 1;                         // the ground means nothing up there
-  const f=terrainAt(x,y);
-  let m=1;
-  if(f&WOOD)  m*= kind==='cav'?.55:kind==='siege'?.58:.74;
-  if(f&FIELD) m*= kind==='cav'||kind==='siege'?1:.88;    // wheat catches at a man's legs
-  if(f&MARSH) m*= kind==='siege'?.5:.66;
-  if(f&FORD)  m*= kind==='siege'?.45:.62;
-  if(f&ROCK)  m*= kind==='cav'?.6:.72;
-  if(f&STONE) m*= .9;
-  if(f&WIRED) m*= kind==='cav'||kind==='siege'?.6:.28;   // wire stops men, vehicles crush through
-  if(f&TRENCHED) m*= kind==='cav'||kind==='siege'?.55:.9;
-  m*=1-.11*cGrid[gi(x,y)];                 // mud drags
-  return m;
-}
-function slopeMul(x,y,ang){                // uphill costs, downhill carries you
-  const e0=elevAt(x,y),e1=elevAt(x+Math.cos(ang)*26,y+Math.sin(ang)*26);
-  if(e1>e0) return .84;
-  if(e1<e0) return 1.16;
-  return 1;
-}
+// How fast a unit crosses this ground. Takes the unit TYPE, not its kind: a
+// battle tank fires at range but crosses a wire belt like the vehicle it is.
+const moveMul=(x,y,ut)=>T.moveMul(terrain,x,y,mobilityOf(ut));
+const slopeMul=(x,y,ang)=>T.slopeMul(terrain,x,y,ang);
 
 /* ===================== relief ===================== */
 // The ground is a continuous height field, and everything else is a consequence
@@ -332,8 +311,6 @@ function slopeMul(x,y,ang){                // uphill costs, downhill carries you
 // Fairness: the field is made rotationally symmetric about the map centre, so
 // what lies in front of one keep lies in front of the other after a 180-degree
 // turn. That is fair without a mirror line down the middle to give it away.
-let hGrid = new Float32Array(1);
-const heightAt = (x, y) => hGrid[gi(x, y)];
 let riverRow = new Float32Array(1);        // river centre-x, one entry per terrain row
 let laneY = LANE_Y.slice(), div = DIV.slice();
 let CROSS = [{ y:laneY[0], type:'ford' }, { y:laneY[1], type:'bridge' }, { y:laneY[2], type:'ford' }];
@@ -358,7 +335,7 @@ function latAt(a, w, h, u, v) {
 const OCTAVES = [[3, 3, 1], [6, 5, .52], [11, 9, .27], [21, 15, .14], [41, 29, .07]];
 
 function buildRelief() {
-  hGrid = new Float32Array(TW * TH);
+  hGrid = terrain.height;      // the model owns the field; relief fills it
   const fs = OCTAVES.map(o => lattice(o[0], o[1]));
   let lo = 1e9, hi = -1e9;
   for (let gy = 0; gy < TH; gy++)
@@ -531,12 +508,7 @@ function reliefLayer() {
 // slopes away from the water, marsh wants the low flat ground beside it, rock
 // wants the steep faces, crops want the flattest ground they can get, and people
 // build where it is flat and the water is close but not underfoot.
-const slopeAt = (x, y) => {
-  const i = gi(x, y), gx = i % TW, gy = (i / TW) | 0;
-  const hl = hGrid[gy * TW + Math.max(0, gx - 1)], hr = hGrid[gy * TW + Math.min(TW - 1, gx + 1)];
-  const hu = hGrid[Math.max(0, gy - 1) * TW + gx], hd = hGrid[Math.min(TH - 1, gy + 1) * TW + gx];
-  return Math.hypot(hr - hl, hd - hu);
-};
+const slopeAt = (x, y) => T.slopeAt(terrain, x, y);
 
 function suitability(type, x, y) {
   const h = heightAt(x, y), sl = slopeAt(x, y);
@@ -924,8 +896,9 @@ function stampFeat(f){
 function genTerrain(){
   srand(matchSeed);
   feats=[]; buildings=[]; fires=[]; props=[];
-  tGrid=new Uint16Array(TW*TH); eGrid=new Uint8Array(TW*TH);
-  cGrid=new Float32Array(TW*TH); pGrid=new Uint8Array(TW*TH);
+  terrain=T.makeTerrain(W,H,TG);
+  tGrid=terrain.flags; eGrid=terrain.elev; cGrid=terrain.churn; hGrid=terrain.height;
+  pGrid=new Uint8Array(TW*TH);
   const M=MAPS[mapType];
 
   buildRelief();        // the land itself: noise bent into this map's landform
@@ -1048,14 +1021,7 @@ function stepOccupancy(dt){
     if(!b.blue&&!b.red&&b.tint<=0) b.hold=null;
   }
 }
-function blob(x,y,rx,ry,flag){
-  rx*=FS; ry*=FS;
-  for(let gy=clamp((y-ry)/TG|0,0,TH-1);gy<=clamp((y+ry)/TG|0,0,TH-1);gy++)
-    for(let gx=clamp((x-rx)/TG|0,0,TW-1);gx<=clamp((x+rx)/TG|0,0,TW-1);gx++){
-      const px=gx*TG+TG/2,py=gy*TG+TG/2;
-      if(((px-x)/rx)**2+((py-y)/ry)**2<=1) tGrid[gy*TW+gx]|=flag;
-    }
-}
+const blob=(x,y,rx,ry,flag)=>T.stampBlob(terrain,x,y,rx*FS,ry*FS,flag);
 // A village is a place, not a scatter of boxes. One track runs through it, the
 // houses stand square to that track with a yard behind each, there are barns and
 // a well, and the land around it is worked: an orchard on one flank and crop
@@ -1066,7 +1032,9 @@ function village(cx,cy,houses,rx,ry){
   blob(cx,cy,rx,ry,STONE);
   const RX=rx*FS,RY=ry*FS;
   const road=rnd(0,3.14),ca=Math.cos(road),sa=Math.sin(road);
-  props.push({kind:'road',x:cx,y:cy,a:road,len:RX*2.25,w:rnd(15,22)});
+  const rw=rnd(15,22);
+  props.push({kind:'road',x:cx,y:cy,a:road,len:RX*2.25,w:rw});
+  stampLine(cx,cy,road,RX*2.25,rw*.5,ROAD);      // metalled: armour rolls, and it never turns to mud
 
   const n=Math.max(3,Math.round(houses*1.5));
   for(let i=0;i<n;i++){
@@ -1693,6 +1661,10 @@ function collect(x,y,r){
   }
 }
 const canEngage=(t,o)=>!o.sq.t.air||t.air||t.aa;    // only flak, machine guns and other aircraft
+// Close in, everyone can see everyone: a sight line is not something to argue
+// about across a street corner, and checking one would cost more than it says.
+const LOSFREE=130;
+const seesFrom=(s,o)=>T.sightClear(terrain,s.x,s.y,o.x,o.y,elevAt(s.x,s.y));
 function findEnemy(s,range,pref){
   collect(s.x,s.y,range);
   let best=null,bd=range*range,bp=null,bpd=range*range;
@@ -1704,7 +1676,23 @@ function findEnemy(s,range,pref){
     if(pref!==null&&o.sq===pref&&d<bpd){bpd=d;bp=o;}
     if(d<bd){bd=d;best=o;}
   }
-  return bp||best;
+  const pick=bp||best;
+  if(!pick||t.air||t.kind==='siege') return pick;   // guns lob theirs over the hill
+  const pd=(pick.x-s.x)**2+(pick.y-s.y)**2;
+  if(pd<=LOSFREE*LOSFREE||seesFrom(s,pick)) return pick;
+  // The nearest man is behind something. Take the nearest one he can actually
+  // see instead, at a bounded cost - and if he can see nobody, he has no shot
+  // to take and closes with the formation until he has one.
+  let alt=null,ad=range*range,looks=0;
+  for(let i=0;i<NEARn;i++){
+    const o=NEAR[i];
+    if(!o.alive||o.sq.team===s.sq.team||!canEngage(t,o)) continue;
+    const dx=o.x-s.x,dy=o.y-s.y,d=dx*dx+dy*dy;
+    if(d>=ad) continue;
+    if(d>LOSFREE*LOSFREE&&!seesFrom(s,o)){ if(++looks>8) break; continue; }
+    ad=d; alt=o;
+  }
+  return alt;
 }
 function nearestEnemySquad(sq,sameLane){
   let best=null,bd=1e9;
@@ -1787,7 +1775,7 @@ function razeBuilding(b){
     for(let gx=((b.x-b.w/2)/TG|0);gx<=((b.x+b.w/2)/TG|0);gx++){
       if(gx<0||gy<0||gx>=TW||gy>=TH) continue;
       const i=gy*TW+gx;
-      tGrid[i]&=~BUILD; tGrid[i]|=ROCK|SCORCH; bGrid[i]=-1;      // rubble field
+      tGrid[i]&=~BUILD; tGrid[i]|=RUBBLE|SCORCH; bGrid[i]=-1;   // men shelter in it, armour goes round
     }
 }
 function collapse(b){
@@ -1827,17 +1815,7 @@ function paintRuin(b){
     for(let i=0;i<14;i++) decalCtx.fillRect(b.x+rnd(-b.w*.7,b.w*.7),b.y+rnd(-b.h*.7,b.h*.7),rnd(4,12),rnd(2,4));
   }
 }
-function stampLine(x,y,ang,len,halfW,flag){
-  const cs=Math.cos(ang),sn=Math.sin(ang);
-  for(let d=-len/2;d<=len/2;d+=TG*.5){
-    const px=x+cs*d,py=y+sn*d;
-    for(let o=-halfW;o<=halfW;o+=TG*.5){
-      const qx=px-sn*o,qy=py+cs*o;
-      if(qx<0||qy<0||qx>=W||qy>=H) continue;
-      tGrid[gi(qx,qy)]|=flag;
-    }
-  }
-}
+const stampLine=(x,y,ang,len,halfW,flag)=>T.stampLine(terrain,x,y,ang,len,halfW,flag);
 function paintWire(x,y,ang,len){
   if(!decalCtx) return;
   const cs=Math.cos(ang),sn=Math.sin(ang);
@@ -2160,7 +2138,7 @@ function stepSquad(sq,dt){
         const ul=Math.hypot(ux,uy)||1; ux/=ul; uy/=ul;
       }
       const ang=Math.atan2(uy,ux);
-      const mul=moveMul(sq.fx,sq.fy,t.kind)*slopeMul(sq.fx,sq.fy,ang);
+      const mul=moveMul(sq.fx,sq.fy,t)*slopeMul(sq.fx,sq.fy,ang);
       if(d>stopAt){
         const st=Math.min(sp*mul*dt,d-stopAt);
         const nx=sq.fx+ux*st,ny=sq.fy+uy*st;
@@ -2225,7 +2203,7 @@ function stepSoldier(s,dt){
   if(sq.routed){
     const hx=sq.team==='blue'?-60:W+60;
     const a=face(s,Math.atan2(sq.fy-s.y,hx-s.x),dt);
-    const m=moveMul(s.x,s.y,t.kind);
+    const m=moveMul(s.x,s.y,t);
     const sp=accel(s,t.speed*1.35*m*crowdMul(s),dt);
     move(s,Math.cos(a)*sp*dt,Math.sin(a)*sp*dt);
     separate(s,dt);                                // even a rout does not run through itself
@@ -2237,7 +2215,7 @@ function stepSoldier(s,dt){
     slotInto(sq,s.idx);
     guide(s,SX,SY);
     const dx=GX-s.x,dy=GY-s.y,d=Math.hypot(dx,dy);
-    if(d>2){ const m=moveMul(s.x,s.y,t.kind)*slopeMul(s.x,s.y,Math.atan2(dy,dx));
+    if(d>2){ const m=moveMul(s.x,s.y,t)*slopeMul(s.x,s.y,Math.atan2(dy,dx));
       const sp=accel(s,Math.min(t.speed*1.5*m,d*5)*crowdMul(s),dt);
       if(move(s,dx/d*sp*dt,dy/d*sp*dt)) s.jam=0; else unjam(s,sp,dt);
       s.step+=dt*(2+s.sp*.11); }
@@ -2288,7 +2266,7 @@ function stepSoldier(s,dt){
     } else if(d<=t.range) melee(s,dt,t.dmg,t.range);
     else if(d<aggro+40&&!acrossRiver(s.x,s.y,s.tgt.x,s.tgt.y)){
       const a=s.ang;                                  // already turned toward him, at a rate
-      const m=moveMul(s.x,s.y,t.kind)*slopeMul(s.x,s.y,a);
+      const m=moveMul(s.x,s.y,t)*slopeMul(s.x,s.y,a);
       const sp=accel(s,t.speed*(sq.order.kind==='charge'?1.3:1)*m*crowdMul(s),dt);
       move(s,Math.cos(a)*sp*dt,Math.sin(a)*sp*dt); s.step+=dt*(2+s.sp*.12);
       if(t.kind==='cav'&&sp>68&&!(flags&WOOD)){ s.charge=true;
@@ -2302,7 +2280,7 @@ function stepSoldier(s,dt){
       if(s.cd<=0){ s.cd=t.cd; hurtWall(s.wall,t.dmg*rnd(.8,1.2)*.8); burst(s.wall.x,cy,1,'spark'); }
       moved=true;
     } else if(d<40){ const a=face(s,Math.atan2(cy-s.y,s.wall.x-s.x),dt);
-      const m=moveMul(s.x,s.y,t.kind);
+      const m=moveMul(s.x,s.y,t);
       const sp=accel(s,t.speed*m*crowdMul(s),dt);
       move(s,Math.cos(a)*sp*dt,Math.sin(a)*sp*dt); moved=true; }
   } else if(s.cas&&!s.cas.dead&&(t.kind==='cav'||t.kind==='ranged')){
@@ -2324,7 +2302,7 @@ function stepSoldier(s,dt){
         burst(px,py,2,'dust'); }
       moved=true;
     } else if(sq.order.kind==='castle'||d<70){
-      const m=moveMul(s.x,s.y,t.kind);
+      const m=moveMul(s.x,s.y,t);
       const sp=accel(s,t.speed*m*crowdMul(s),dt);
       move(s,Math.cos(s.ang)*sp*dt,Math.sin(s.ang)*sp*dt); s.step+=dt*(2+s.sp*.11); moved=true;
     }
@@ -2333,7 +2311,7 @@ function stepSoldier(s,dt){
     slotInto(sq,s.idx);
     guide(s,SX,SY);
     const dx=GX-s.x,dy=GY-s.y,d=Math.hypot(dx,dy);
-    if(d>2){ const m=moveMul(s.x,s.y,t.kind);
+    if(d>2){ const m=moveMul(s.x,s.y,t);
       const sp=accel(s,Math.min(t.speed*1.35*m,d*5)*crowdMul(s),dt);
       if(move(s,dx/d*sp*dt,dy/d*sp*dt)) s.jam=0; else unjam(s,sp,dt);
       s.step+=dt*(2+s.sp*.11);
@@ -2501,18 +2479,7 @@ function guide(s,tx,ty){
     if(Math.abs(s.y-c.y)<26&&Math.abs(s.x-GX)<150) GX=riverXAt(c.y)+(s.x<GX?200:-200);
   } else { GX=tx; GY=ty; }
 }
-function coverMul(x,y,air){
-  const f=terrainAt(x,y);
-  if(air) return (f&WOOD)?.6:1;              // only the canopy hides you from the sky
-
-  let m=1;
-  if(f&TRENCHED) m*=.42;                    // dug in
-  if(f&WOOD) m*=.45;
-  if(f&FIELD) m*=.78;                       // standing crops hide you, nothing more
-  if(f&STONE) m*=.55;
-  if(f&BUILD) m*=.4;
-  return m;
-}
+const coverMul=(x,y,air)=>T.coverAt(terrain,x,y,air);
 function melee(s,dt,dmg,range){
   s.cd-=dt; if(s.cd>0) return;
   const t=s.sq.t; s.cd=t.cd*rnd(.85,1.15);
@@ -3291,7 +3258,7 @@ function restoreBattle(d){
     if(b.d){ razeBuilding(bd); paintRuin(bd); }
   }
   for(let k=0;k<d.tg.length;k+=2) tGrid[d.tg[k]]=d.tg[k+1];   // the grid has the last word
-  cGrid=new Float32Array(TW*TH); pGrid=new Uint8Array(TW*TH);
+  cGrid=terrain.churn; cGrid.fill(0); pGrid=new Uint8Array(TW*TH);
   for(let k=0;k<(d.ch||[]).length;k+=2){
     const i=d.ch[k],v=CHURN_VAL[clamp(d.ch[k+1],0,CHURN_MAX)];
     if(i<0||i>=cGrid.length) continue;
@@ -3757,8 +3724,7 @@ function makeFogDot(){
 }
 // Darkness closes the fog in. Never below a third: a battlefield lights itself
 // with burning wreckage, and a unit that cannot see at all cannot fight at all.
-const sightOf=sq=>(sq.t.sight||430)*(elevAt(sq.fx,sq.fy)>=2?1.25:1)
-  *(.34+.66*dayLight);
+const sightOf=sq=>T.sightRange(terrain,sq.fx,sq.fy,sq.t.sight||430)*(.34+.66*dayLight);
 function updateVision(dt){
   const vt=viewTeam();
   const eyes=[];
@@ -3775,10 +3741,17 @@ function updateVision(dt){
     const sq=squads[i];
     if(sq.team===vt){ sq.seen=true; continue; }
     if((sq.fx-W/2)*home>0){ sq.seen=true; sq.seenT=2.2; continue; }
-    let on=false;
+    // Ground hides men. A squad in a wood or in standing crops has to be let
+    // closer before anyone makes it out, and no eye sees through a hill, a
+    // building or the trees in between. Four eyes may look; if none of them
+    // has a line, the squad is genuinely hidden and nobody else need try.
+    const hide=1-.55*T.hideAt(terrain,sq.fx,sq.fy);
+    let on=false,looks=0;
     for(let e=0;e<eyes.length;e+=3){
-      const dx=sq.fx-eyes[e],dy=sq.fy-eyes[e+1],r=eyes[e+2]+70;
-      if(dx*dx+dy*dy<r*r){ on=true; break; }
+      const dx=sq.fx-eyes[e],dy=sq.fy-eyes[e+1],r=(eyes[e+2]+70)*hide;
+      if(dx*dx+dy*dy>=r*r) continue;
+      if(looks++>=4) break;
+      if(T.sightClear(terrain,eyes[e],eyes[e+1],sq.fx,sq.fy)){ on=true; break; }
     }
     if(on) sq.seenT=2.2; else if(sq.seenT>0) sq.seenT-=dt;
     sq.seen=on||sq.seenT>0;                       // last known position lingers a moment
@@ -5737,6 +5710,18 @@ try{ window.__lvl=(t,n)=>{ lvl[t]=n; buildPalette(); };
      window.__fell=(x,y,r)=>{ const l=treesNear(x,y,r).slice();
        for(const t of l) fellTree(t,0); return l.length; };
      window.__wood=(x,y)=>!!(terrainAt(x,y)&WOOD);
+     window.__cell=(x,y)=>T.cellAt(terrain,x,y);
+     window.__name=(x,y)=>groundName(x,y);
+     window.__los=(x0,y0,x1,y1,e)=>T.sightClear(terrain,x0,y0,x1,y1,e);
+     window.__mob=(k)=>mobilityOf(UNITS[k]);
+     window.__ground=(key,pure)=>{ const bit=T.GROUND[key].bit; let n=0,fx=-1,fy=-1;
+       for(let i=0;i<tGrid.length;i++){ if(!(tGrid[i]&bit)) continue; n++;
+         if(fx<0&&(!pure||tGrid[i]===bit)){ fx=(i%TW)*TG+TG/2; fy=((i/TW)|0)*TG+TG/2; } }
+       return {n,x:fx,y:fy}; };
+     window.__churn=(x,y,v)=>{ terrain.churn[gi(x,y)]=v; return churnAt(x,y); };
+     window.__raze=(x,y)=>{ const n=bGrid[gi(x,y)]; if(n<0) return null;
+       const b=buildings[n]; collapse(b); return {x:b.x,y:b.y,w:b.w,h:b.h}; };
+     window.__aBuilding=()=>{ for(const b of buildings) if(!b.dead&&!b.bunker) return {x:b.x,y:b.y}; return null; };
      window.__aTree=()=>{ for(const t of trees) if(!t.dead) return {x:t.x,y:t.y,s:t.s}; return null; };
      window.__land=()=>{ let fc=0; for(let i=0;i<tGrid.length;i++) if(tGrid[i]&FIELD) fc++;
        const kinds={}; for(const p of props) kinds[p.kind]=(kinds[p.kind]||0)+1;

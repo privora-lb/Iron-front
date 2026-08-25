@@ -4,7 +4,7 @@
 //   node test/harness.js            full suite
 //   node test/harness.js --fast     shorter match runs, for a quick loop
 //
-// Seven checks, in the order they catch things:
+// Eight checks, in the order they catch things:
 //   1. LOAD        index.html evaluates with no error - catches the load-time
 //                  crash that shows up in a browser as a black screen.
 //   2. MATCH       a match runs 1800+ frames on each of the five battlefields,
@@ -24,6 +24,10 @@
 //   7. SAVES       a battle saved in one process and loaded in another comes
 //                  back with the same stateHash() and runs on identically; the
 //                  slots hold; an unreadable record is refused, not half-loaded.
+//   8. TERRAIN     the battlefield model: what a cell IS decides how fast you
+//                  cross it, what it takes off a shell, whether it hides you
+//                  and whether you can see through it - and the info line and
+//                  the simulation read the same answer.
 const fs = require('fs');
 const os = require('os');
 const path = require('path');
@@ -600,6 +604,131 @@ for (const map of FAST ? ['villages'] : MAPS) {
   if (g.fault()) problems.push('draw fault after loading: ' + g.fault());
   if (problems.length) bad('save and load through the menu', problems.join(BR));
   else ok('save and load through the menu', 'paused, saved, fought on, loaded back to the same state');
+}
+
+/* ------------------------------------------------------------------ */
+/* 8. TERRAIN - the battlefield model, and the battle reading it       */
+/* ------------------------------------------------------------------ */
+head('8. TERRAIN');
+
+// The model itself, on ground built by hand, in its own process. It imports
+// src/world/terrain.js directly - no DOM, no engine - which is only possible
+// because the model has no idea any of that exists.
+{
+  let out = null;
+  try {
+    out = JSON.parse(execFileSync(process.execPath, [path.join(__dirname, 'terrainrun.mjs')],
+      { encoding: 'utf8' }).trim().split('\n').pop());
+  } catch (e) {
+    bad('the terrain model answers correctly', (e.stdout || '') + (e.stderr || '') || e.message);
+  }
+  if (out) {
+    if (out.ok) ok('the terrain model answers correctly', out.checks + ' assertions on hand-built ground');
+    else bad('the terrain model answers correctly', out.fails.join(BR));
+  }
+}
+
+function ground(map) {
+  const g = loadGame({ quiet: true });
+  g.all('#mapPick [data-map="' + map + '"]')[0].click();
+  g.hook('seed')(4242);
+  g.all('#startVeil [data-budget="2000"]')[0].click();
+  g.el('autoDep').click();
+  g.el('startBattle').click();
+  return g;
+}
+
+// A road is ground you can drive on, not a line painted on the ground. Every
+// battlefield lays some, and armour must actually go faster along it.
+{
+  const problems = [];
+  let metalled = 0;
+  for (const map of MAPS) {
+    const g = ground(map);
+    const road = g.hook('ground')('road');
+    if (!road.n) { problems.push(map + ': no road cells at all'); continue; }
+    if (g.hook('cell')(road.x, road.y).surface !== 'road') {
+      problems.push(map + ': a road cell does not read as a road');
+    }
+    // A track over rock is still rock underneath, so judge the promise that a
+    // road carries armour on a cell that is nothing BUT road.
+    const clean = g.hook('ground')('road', true);
+    if (clean.x < 0) continue;
+    metalled++;
+    const c = g.hook('cell')(clean.x, clean.y);
+    if (!(c.move[1] > 1) || c.move[1] <= c.move[0]) {
+      problems.push(map + ': open road does not carry armour (' + c.move.slice(0, 3).join('/') + ')');
+    }
+  }
+  if (metalled < 3) problems.push('only ' + metalled + ' of five battlefields have open road');
+  if (problems.length) bad('every battlefield is laid with roads that carry armour', problems.join(BR));
+  else ok('every battlefield is laid with roads that carry armour');
+}
+
+// A house that comes down leaves ground that behaves like rubble: men shelter
+// in it, armour has to go round.
+{
+  const g = ground('city');
+  const b = g.hook('aBuilding')();
+  const problems = [];
+  if (!b) problems.push('the city has no buildings to knock down');
+  else {
+    const before = g.hook('cell')(b.x, b.y);
+    g.hook('raze')(b.x, b.y);
+    const after = g.hook('cell')(b.x, b.y);
+    if (before.surface !== 'build') problems.push('the building cell did not read as a building: ' + before.surface);
+    if (after.surface !== 'rubble') problems.push('a collapsed building left ' + after.surface + ', not rubble');
+    if (after.hardFoot) problems.push('rubble shut infantry out');
+    if (!after.hardMounted) problems.push('rubble let armour drive through it');
+    if (!(after.cover < 1)) problems.push('rubble gave no cover');
+    g.frames(4);
+    if (g.fault()) problems.push('draw fault after a collapse: ' + g.fault());
+  }
+  if (problems.length) bad('a collapsed building leaves rubble that behaves like rubble', problems.join(BR));
+  else ok('a collapsed building leaves rubble that behaves like rubble');
+}
+
+// What the info line tells the player has to be what the simulation is using.
+// One model, read by both, or the ground lies about itself.
+{
+  const g = ground('villages');
+  const problems = [];
+  let checked = 0;
+  for (const key of ['wood', 'crop', 'stone', 'water', 'road']) {
+    // one thing at a time: a village cell is often a building cell too, and
+    // then 'inside a building' is the right answer, not 'in the village'
+    const spot = g.hook('ground')(key, true);
+    if (spot.x < 0) continue;
+    checked++;
+    const c = g.hook('cell')(spot.x, spot.y);
+    const said = g.hook('name')(spot.x, spot.y);
+    if (c.surface !== key) problems.push(key + ' ground reads as ' + c.surface);
+    if (said !== c.name) problems.push(key + ': the info line says "' + said + '", the model says "' + c.name + '"');
+  }
+  if (checked < 3) problems.push('only ' + checked + ' ground types found to check');
+  if (problems.length) bad('what the player is told is what the simulation is using', problems.join(BR));
+  else ok('what the player is told is what the simulation is using', checked + ' ground types agree');
+}
+
+// Sight lines have to come off the same ground everyone is standing on.
+{
+  const g = ground('villages');
+  const problems = [];
+  const wood = g.hook('ground')('wood', true);
+  if (wood.x < 0) problems.push('no open wood to sight through');
+  else {
+    if (!g.hook('cell')(wood.x, wood.y).blind) problems.push('a wood is not marked as blocking sight');
+    if (g.hook('los')(wood.x - 60, wood.y, wood.x + 60, wood.y, 0)) {
+      problems.push('a sight line ran straight through a wood');
+    }
+    // inside one cell nobody argues about a sight line
+    if (!g.hook('los')(wood.x - 4, wood.y, wood.x + 4, wood.y, 0)) {
+      problems.push('a cell blocked a sight line inside itself');
+    }
+  }
+  if (!g.hook('los')(80, 60, 400, 60, 0)) problems.push('open ground near the corner blocked a sight line');
+  if (problems.length) bad('sight lines are cast against the real ground', problems.join(BR));
+  else ok('sight lines are cast against the real ground');
 }
 
 /* ------------------------------------------------------------------ */

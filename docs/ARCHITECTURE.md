@@ -18,7 +18,8 @@ Imports only ever point downward. Nothing in `data/` or `core/` may import from
         └── game/engine.js     simulation, renderer, HUD, input
                   │
                   ├── audio/   synthesised effects — no sample files
-                  ├── data/    rules as plain values — units, maps, ranks
+                  ├── world/   the battlefield itself — terrain model, land use
+                  ├── data/    rules as plain values — units, maps, ranks, ground
                   └── core/    leaf helpers — rng, math, dom, polyfills
 ```
 
@@ -28,6 +29,7 @@ Imports only ever point downward. Nothing in `data/` or `core/` may import from
 | --------------- | ----------------------------------------------------------------------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | `src/data/`     | Balance and content: unit stats, the five battlefields, the rank ladder, difficulty presets, engineer works, world size | Values only. No state, no DOM, no imports from anywhere but other data modules. A designer should be able to edit these without reading a line of engine code. |
 | `src/core/`     | `rng.js` (the seeded xorshift the simulation runs on), `math.js`, `dom.js`, `polyfills.js`                              | Pure, tiny, no game knowledge.                                                                                                                                 |
+| `src/world/`    | The battlefield as data: `terrain.js` (what every cell is and what it does to you), `landuse.js`, `paintLanduse.js`     | No canvas, no squads, no orders — and no RNG, so a terrain query can never desync a match. Importable straight into a test.                                    |
 | `src/game/`     | `engine.js` — the whole simulation, renderer and input layer                                                            | Being split; see [EXTRACTION.md](EXTRACTION.md).                                                                                                               |
 | `src/audio/`    | `sound.js` — every effect synthesised at run time, rate-limited and voice-capped                                        | Draws on `Math.random`, never the seeded RNG, so it cannot perturb a match.                                                                                    |
 | `src/platform/` | `native.js` (Capacitor bridge), `pwa.js` (service worker), `storage.js` (save data)                                     | Every function degrades to a no-op on the web.                                                                                                                 |
