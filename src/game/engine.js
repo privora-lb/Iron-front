@@ -1311,6 +1311,25 @@ function bakeTerrain(){
   for(let i=0;i<620;i++){ const x=rnd(0,W),y=rnd(0,H),r=rnd(34,150);
     g.fillStyle=R()<.5?M.mottle[0]:M.mottle[1];
     g.beginPath(); g.ellipse(x,y,r,r*rnd(.35,.7),rnd(0,3.14),0,6.28); g.fill(); }
+  // Fine grain. The mottling above varies the ground at the scale of a field,
+  // and with nothing an order of magnitude smaller under it the result reads as
+  // paint rather than as earth. Drawn with vr(), the cosmetic generator, not
+  // R(): this is texture that never reaches the simulation, and keeping it off
+  // the seeded stream means the determinism hashes do not move for it. Baked
+  // once, so ten thousand specks cost nothing per frame.
+  g.globalAlpha=.42;
+  for(let i=0;i<9000;i++){
+    const x=vr(0,W),y=vr(0,H),r=vr(1.4,5.2);
+    g.fillStyle=vr(0,1)<.5?M.mottle[0]:M.mottle[1];
+    g.beginPath(); g.ellipse(x,y,r,r*vr(.5,1),vr(0,3.14),0,6.28); g.fill();
+  }
+  g.globalAlpha=.16;                              // a little dark speckle for depth
+  g.fillStyle='#1B1D16';
+  for(let i=0;i<3200;i++){
+    const x=vr(0,W),y=vr(0,H),r=vr(.9,2.6);
+    g.beginPath(); g.ellipse(x,y,r,r*vr(.5,1),0,0,6.28); g.fill();
+  }
+  g.globalAlpha=1;
   if(mapType!=='city'){
     g.strokeStyle=mapType==='desert'?'rgba(150,128,84,.20)':'rgba(120,106,74,.18)';
     g.lineWidth=30; g.lineCap='round';
@@ -4428,10 +4447,17 @@ function draw(){
     const b=bases[i];
     if(b.dead||b.x+b.r<vx0||b.x-b.r>vx1||b.y+b.r<vy0||b.y-b.r>vy1) continue;
     const c=COL[b.team];
-    ctx.fillStyle=b.team==='blue'?'rgba(76,127,191,.10)':'rgba(190,59,46,.10)';
+    // The reach of the outpost. This used to be a dashed ring with a flat tint
+    // inside it, which is a board-game token drawn on the ground. A soft falloff
+    // says the same thing - influence thinning with distance - without stamping
+    // a hard circle on the field.
+    const rg=ctx.createRadialGradient(b.x,b.y,b.r*.35,b.x,b.y,b.r);
+    const tint=b.team==='blue'?'76,127,191':'190,59,46';
+    rg.addColorStop(0,'rgba('+tint+',.16)');
+    rg.addColorStop(.72,'rgba('+tint+',.07)');
+    rg.addColorStop(1,'rgba('+tint+',0)');
+    ctx.fillStyle=rg;
     ctx.beginPath(); ctx.arc(b.x,b.y,b.r,0,6.28); ctx.fill();
-    ctx.strokeStyle=c.body; ctx.lineWidth=3/cam.s; ctx.setLineDash([16,12]);
-    ctx.beginPath(); ctx.arc(b.x,b.y,b.r,0,6.28); ctx.stroke(); ctx.setLineDash([]);
     ctx.fillStyle='rgba(70,68,58,.85)'; ctx.fillRect(b.x-104,b.y-92,208,184);   // hardstanding
     ctx.strokeStyle='rgba(24,22,18,.6)'; ctx.lineWidth=2/cam.s;
     ctx.strokeRect(b.x-104,b.y-92,208,184);
@@ -4525,8 +4551,12 @@ function draw(){
     }
   }
   if(quality===1){
-    const v=ctx.createRadialGradient(w*.5,h*.45,Math.min(w,h)*.25,w*.5,h*.5,Math.max(w,h)*.78);
-    v.addColorStop(0,'rgba(255,226,170,.05)'); v.addColorStop(1,'rgba(10,8,5,.42)');
+    // A vignette should frame the picture, not smother it. At .42 on the rim it
+    // was pulling the contrast out of half the field and leaving the ground a
+    // flat haze, which is much of what made the map look painted rather than
+    // photographed. Enough to draw the eye inward, no more.
+    const v=ctx.createRadialGradient(w*.5,h*.45,Math.min(w,h)*.42,w*.5,h*.5,Math.max(w,h)*.82);
+    v.addColorStop(0,'rgba(255,226,170,.03)'); v.addColorStop(1,'rgba(10,8,5,.24)');
     ctx.fillStyle=v; ctx.fillRect(0,0,w,h);
   }
   if(quality&&(phase==='battle'||phase==='deploy')){
