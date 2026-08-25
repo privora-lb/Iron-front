@@ -11,9 +11,11 @@
 // sun crosses the map rather than the sky, because a shadow that sweeps around
 // through the afternoon is what actually reads as time passing.
 
-// Fifteen minutes of fighting to the full day. Long enough that dawn is not a
-// strobe, short enough that a hard-fought battle really does end in the dark.
-export const DAY_LEN = 900;
+// An hour of fighting to the full turn of the sky. Sized so that a battle
+// traces one ARC of the day rather than looping through several: start at dusk
+// and you finish in the dark, start at night and dawn comes up behind you.
+// Shorter than this and the light strobes; longer and it never changes at all.
+export const DAY_LEN = 3600;
 
 // Where a battle may begin. `at` is the position in the cycle: 0 is midnight,
 // 0.25 sunrise, 0.5 noon, 0.75 sunset.
@@ -49,7 +51,10 @@ export const sunDir = (tod) => Math.PI * 0.35 + (tod - 0.25) * Math.PI * 2;
 export const MOONLIGHT = 0.12;
 export const lightAt = (tod) => {
   const el = sunElev(tod);
-  return Math.max(MOONLIGHT, clamp01(el * 1.7 + 0.14));
+  // A gentle slope on purpose. A steep one puts the whole of dawn into a few
+  // seconds and the rest of the day at full brightness, which reads as a switch
+  // being thrown rather than as the sun coming up.
+  return Math.max(MOONLIGHT, clamp01(el * 1.05 + 0.3));
 };
 
 /** True once it is dark enough that the fighting changes character. */
@@ -65,8 +70,8 @@ export const isNight = (tod) => sunElev(tod) < -0.06;
  */
 export function ambientAt(tod) {
   const el = sunElev(tod);
-  const night = clamp01((0.1 - el) / 0.5);
-  const twilight = clamp01(1 - Math.abs(el) / 0.3);
+  const night = clamp01((0.15 - el) / 0.7);
+  const twilight = clamp01(1 - Math.abs(el) / 0.45);
 
   const nightA = 0.66 * night;
   const twiA = 0.3 * twilight;
@@ -84,9 +89,9 @@ export function ambientAt(tod) {
 export function phaseName(tod) {
   const el = sunElev(tod);
   const rising = tod > 0 && tod < 0.5;
-  if (el < -0.28) return 'Night';
+  if (el < -0.45) return 'Night';
   if (el < -0.06) return rising ? 'Before dawn' : 'Nightfall';
-  if (el < 0.16) return rising ? 'Dawn' : 'Dusk';
-  if (el < 0.6) return rising ? 'Morning' : 'Afternoon';
+  if (el < 0.28) return rising ? 'Dawn' : 'Dusk';
+  if (el < 0.72) return rising ? 'Morning' : 'Afternoon';
   return 'Midday';
 }

@@ -30,9 +30,14 @@ store submission that is not embarrassing.
 - [ ] **Campaign.** Five battlefields with no progression between them is a
       sandbox, not a game. A chain of missions with carried-over rank and a
       losing condition that costs something.
-- [ ] **Save and resume a battle.** The simulation is deterministic and seeded,
-      so a save is the seed plus the input log — small, and it doubles as a
-      replay format.
+- [x] **Save and resume a battle.** Done. Eight slots plus a rolling autosave
+      written when the game is backgrounded, from the pause menu and the start
+      screen; `src/platform/saves.js` owns the slots, `snapshot()` and
+      `restoreBattle()` in the engine own the battle. A save is the match seed
+      plus everything the fighting has changed since: the ground is regenerated
+      rather than stored, so a big battle is about 160 KB. A loaded battle
+      resumes on the same `stateHash()` and runs on tick for tick, which is
+      what check 7 of the harness asserts across two processes.
 - [ ] **Replays.** Falls out of the above almost free. Also the best bug report
       a player can send.
 - [ ] **Tutorial.** The control list in the README is not a tutorial.

@@ -25,6 +25,8 @@ larger formations and a bigger command as you climb.
 - **Difficulty:** Easy, Normal, Hard, and Adaptive — which grows stronger every
   minute
 - **Total War** removes every limit
+- **Save and load:** eight slots plus an autosave when the game is
+  backgrounded, from the pause menu or the start screen
 
 Controls: tap a unit card then the ground to deploy · tap markers to select ·
 tap ground to move · tap an enemy to engage · number keys 1–9 for groups ·
@@ -38,7 +40,7 @@ minimap to jump.
 | `npm run dev`     | Dev server, reachable from a phone on the same network  |
 | `npm run build`   | Production build into `dist/`                           |
 | `npm run preview` | Serve the production build                              |
-| `npm test`        | The headless harness — 18 checks, including determinism |
+| `npm test`        | The headless harness — 39 checks, including determinism |
 | `npm run check`   | Lint, test and build, as CI runs them                   |
 | `npm run icons`   | Regenerate every icon size from the procedural emblem   |
 | `npm run android` | Build, sync and open Android Studio                     |
@@ -54,7 +56,7 @@ src/
   data/               balance and content as plain values — units, maps, ranks
   core/               seeded rng, math, dom, polyfills
   game/engine.js      simulation, renderer, HUD, input (being split up)
-  platform/           Capacitor bridge, storage, service worker registration
+  platform/           Capacitor bridge, storage, saved battles, service worker
   audio/sound.js      synthesised sound effects — no sample files
   styles/             tokens, HUD, panels, overlays, safe-area, fonts
 public/               manifest, service worker, icons, fonts — copied verbatim

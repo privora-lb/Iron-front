@@ -13,11 +13,14 @@ import { NATION, ROMAN } from '../data/nations.js';
 import { MAPS } from '../data/maps.js';
 import { MAXLVL, RANKS, rankOf, nextRank, xpNeed } from '../data/ranks.js';
 import { DIFF } from '../data/difficulty.js';
+import { DAY_LEN, START_HOURS, todAt, sunElev, sunDir, lightAt, isNight,
+         ambientAt, phaseName } from '../data/daynight.js';
 import { srand, R, rnd, vr, seed } from '../core/rng.js';
 import { clamp, dist, other } from '../core/math.js';
 import { el, toast } from '../core/dom.js';
 import { holdScreenAwake, tap } from '../platform/native.js';
 import { write, pick } from '../platform/storage.js';
+import * as SAVES from '../platform/saves.js';
 import { sfx, unlock as unlockAudio, listen, toggleMuted, isMuted,
          suspend as suspendAudio, resume as resumeAudio } from '../audio/sound.js';
 
@@ -34,6 +37,10 @@ const hasWater=()=>MAPS[mapType].water!=='none';
 /* ===================== state ===================== */
 let squads=[],soldiers=[],shots=[],parts=[],pings=[],walls=[],fires=[],feats=[],buildings=[],castles=[];
 let bGrid=new Int32Array(1),sun=.9;
+// The hour. `sun` above is the bearing the light throws shadows along and is
+// now written every tick from the clock rather than being a constant.
+let hourKey=pick('hour',START_HOURS.map(h=>h.key),'day');
+let todStart=.46,tod=.46,dayLight=1,night=false;
 const TX=16,TY=10;                                  // territory blocks
 let terrOwn=new Uint8Array(TX*TY),terrHold=new Float32Array(TX*TY);
 let terrT=0,lastCall=false;
@@ -248,6 +255,7 @@ function unitCost(k,n){
 const BAKE=.5;
 const TG=22,TW=Math.ceil(W/TG),TH=Math.ceil(H/TG);
 let tGrid=new Uint16Array(TW*TH);          // flags
+let tGrid0=null;                           // the same grid as generated: a save diffs against it
 let eGrid=new Uint8Array(TW*TH);          // elevation 0..3
 let cGrid=new Float32Array(TW*TH);        // churn 0..1
 let pGrid=new Uint8Array(TW*TH);          // churn already painted
@@ -973,6 +981,7 @@ function genTerrain(){
   plantTrees();                                // trunks last: nothing planted in water or through a wall
   spawnCivs();                                 // and the people who live here
   bakeTerrain();
+  tGrid0=tGrid.slice();                        // the pristine ground, for save diffs
 }
 function stampBuildings(){
   bGrid=new Int32Array(TW*TH).fill(-1);
@@ -1538,8 +1547,8 @@ let castleT=0;
 function stepCastles(dt){
   for(const c of castles){
     if(c.dead) continue;
-    if(c.hp<c.max*.45&&quality&&R()<dt*3)
-      burst(c.x+rnd(-70,70),c.y+rnd(-90,90),1,'smoke');
+    if(c.hp<c.max*.45&&quality&&Math.random()<dt*3)
+      burst(c.x+vr(-70,70),c.y+vr(-90,90),1,'smoke');
     c.cd-=dt;
     if(c.cd>0) continue;
     c.cd=1.2;
@@ -1710,10 +1719,12 @@ function buildingsNear(x,y,r){
 function hurtBuilding(b,amt){
   if(!b||b.dead) return;
   b.hp-=amt;
-  if(b.hp<b.max*.55&&quality&&R()<.35) burst(b.x+rnd(-b.w/3,b.w/3),b.y-b.h/3,1,'smoke');
+  if(b.hp<b.max*.55&&quality&&Math.random()<.35) burst(b.x+vr(-b.w/3,b.w/3),b.y-b.h/3,1,'smoke');
   if(b.hp<=0) collapse(b);
 }
-function collapse(b){
+// The house is gone: what it stood on becomes a rubble field. Kept apart from
+// collapse() so a loaded battle can put the ruin back without the blast.
+function razeBuilding(b){
   b.dead=true; b.hold=null; b.tint=0; b.hp=0;
   for(let gy=((b.y-b.h/2)/TG|0);gy<=((b.y+b.h/2)/TG|0);gy++)
     for(let gx=((b.x-b.w/2)/TG|0);gx<=((b.x+b.w/2)/TG|0);gx++){
@@ -1721,6 +1732,9 @@ function collapse(b){
       const i=gy*TW+gx;
       tGrid[i]&=~BUILD; tGrid[i]|=ROCK|SCORCH; bGrid[i]=-1;      // rubble field
     }
+}
+function collapse(b){
+  razeBuilding(b);
   // everyone inside is caught in the collapse and thrown clear
   collect(b.x,b.y,Math.max(b.w,b.h));
   for(let i=0;i<NEARn;i++){
@@ -1733,6 +1747,15 @@ function collapse(b){
       o.jam=0;
     }
   }
+  paintRuin(b);
+  for(let i=0;i<18;i++) burst(b.x+rnd(-b.w/2,b.w/2),b.y+rnd(-b.h/2,b.h/2),1,'dust');
+  burst(b.x,b.y,10,'smoke');
+  rings.push({x:b.x,y:b.y,t:.55,max:.55,r:20,to:Math.max(b.w,b.h)*2.2});
+  if(plumes.length<26) plumes.push({x:b.x,y:b.y,t:vr(6,12)});
+  kick(b.x,b.y,5);
+}
+// The ruin, painted into the ground layer.
+function paintRuin(b){
   if(decalCtx){                                                   // paint the ruin into the ground
     decalCtx.fillStyle='rgba(40,37,31,.65)';
     decalCtx.fillRect(b.x-b.w/2,b.y-b.h/2,b.w,b.h);
@@ -1746,11 +1769,6 @@ function collapse(b){
     decalCtx.fillStyle='rgba(18,16,12,.4)';
     for(let i=0;i<14;i++) decalCtx.fillRect(b.x+rnd(-b.w*.7,b.w*.7),b.y+rnd(-b.h*.7,b.h*.7),rnd(4,12),rnd(2,4));
   }
-  for(let i=0;i<18;i++) burst(b.x+rnd(-b.w/2,b.w/2),b.y+rnd(-b.h/2,b.h/2),1,'dust');
-  burst(b.x,b.y,10,'smoke');
-  rings.push({x:b.x,y:b.y,t:.55,max:.55,r:20,to:Math.max(b.w,b.h)*2.2});
-  if(plumes.length<26) plumes.push({x:b.x,y:b.y,t:rnd(6,12)});
-  kick(b.x,b.y,5);
 }
 function stampLine(x,y,ang,len,halfW,flag){
   const cs=Math.cos(ang),sn=Math.sin(ang);
@@ -1839,7 +1857,7 @@ function detonate(x,y,dmg,splash,team,av){
     const a=rnd(0,6.28),sp=rnd(70,190);
     parts.push({x,y,vx:Math.cos(a)*sp,vy:Math.sin(a)*sp,t:rnd(.4,.9),r:rnd(1.2,2.6),type:'debris'});
   }
-  if(splash>44&&plumes.length<26) plumes.push({x,y,t:rnd(4,9)});
+  if(splash>44&&plumes.length<26) plumes.push({x,y,t:vr(4,9)});
   kick(x,y,clamp(splash/12,1.5,9));
   if(R()<.3) igniteAt(x,y);
 }
@@ -1890,7 +1908,7 @@ function stepFire(dt){
   }
   fireT-=dt; if(fireT>0) return; fireT=.5;
   for(const f of fires){
-    if(quality) burst(f.x+rnd(-8,8),f.y+rnd(-8,8),1,'smoke');
+    if(quality) burst(f.x+vr(-8,8),f.y+vr(-8,8),1,'smoke');
     collect(f.x,f.y,20);
     for(let i=0;i<NEARn;i++){
       const o=NEAR[i];
@@ -1931,6 +1949,37 @@ function sendToLane(list,lane){
 }
 
 /* ===================== simulation ===================== */
+// How hard a formation is pushed off the ones around it. Works on squad centres
+// and footprints, not on individual men, so it steers whole units around each
+// other rather than jostling bodies. An enemy you have been ordered onto is not
+// something to avoid - you are supposed to arrive on top of him.
+function squadPush(sq){
+  let px=0,py=0;
+  const rs=(sq.fw+sq.fd)*.25+26;
+  const closing=sq.order.kind==='attack'||sq.order.kind==='charge'||sq.order.kind==='castle';
+  for(let i=0;i<squads.length;i++){
+    const o=squads[i];
+    if(o===sq||o.gone||o.routed) continue;
+    if(!!o.t.air!==!!sq.t.air) continue;             // one of them is flying
+    if(o.team!==sq.team&&closing) continue;
+    const md=rs+(o.fw+o.fd)*.25+26;
+    const dx=sq.fx-o.fx,dy=sq.fy-o.fy;
+    const d2=dx*dx+dy*dy;
+    if(d2>=md*md||d2<1e-6) continue;
+    const d=Math.sqrt(d2),w=(md-d)/md;
+    px+=dx/d*w; py+=dy/d*w;
+  }
+  return {x:px,y:py};
+}
+// The hour of the day, advanced by battle time alone so both sides of a match
+// agree on it without a word. Everything it sets is read by the renderer and by
+// how far anyone can see; nothing here draws on R().
+function stepClock(dt){
+  tod=todAt(todStart,battleTime);
+  sun=sunDir(tod);
+  dayLight=lightAt(tod);
+  night=isNight(tod);
+}
 function stepSquad(sq,dt){
   if(sq.gone) return;
   let n=0; for(let i=0;i<sq.soldiers.length;i++) if(sq.soldiers[i].alive) n++;
@@ -1955,7 +2004,7 @@ function stepSquad(sq,dt){
       if((o.x-sq.fx)**2+(o.y-sq.fy)**2<2600){       // on site: down tools and dig
         tx=null; ty=null;
         o.t-=dt*(0.35+0.65*(sq.alive/sq.initial));  // fewer hands, slower work
-        if(quality&&R()<dt*3) burst(o.x+rnd(-40,40),o.y+rnd(-30,30),1,'dust');
+        if(quality&&Math.random()<dt*3) burst(o.x+vr(-40,40),o.y+vr(-30,30),1,'dust');
         if(o.t<=0){
           buildLine(sq.team,o.what,o.x1,o.y1,o.x2,o.y2);
           sq.order={kind:'hold'};
@@ -1997,11 +2046,21 @@ function stepSquad(sq,dt){
     let dx=tx-sq.fx,dy=ty-sq.fy;
     const d=Math.hypot(dx,dy);
     if(d>1){
-      const ang=Math.atan2(dy,dx);
+      // Formations give way to one another. Separation alone works body by body,
+      // so men simply slot into the gaps between other men and two squads walk
+      // through each other into one indistinguishable mass. Steering the whole
+      // formation off its neighbours is what keeps them readable as units.
+      let ux=dx/d,uy=dy/d;
+      const pu=squadPush(sq);
+      if(pu.x||pu.y){
+        ux+=pu.x*.9; uy+=pu.y*.9;
+        const ul=Math.hypot(ux,uy)||1; ux/=ul; uy/=ul;
+      }
+      const ang=Math.atan2(uy,ux);
       const mul=moveMul(sq.fx,sq.fy,t.kind)*slopeMul(sq.fx,sq.fy,ang);
       if(d>stopAt){
         const st=Math.min(sp*mul*dt,d-stopAt);
-        const nx=sq.fx+dx/d*st,ny=sq.fy+dy/d*st;
+        const nx=sq.fx+ux*st,ny=sq.fy+uy*st;
         const px0=sq.fx,py0=sq.fy;
         if(!bl(nx,ny)){ sq.fx=nx; sq.fy=ny; sq.slide=0; }
         else {
@@ -2130,7 +2189,7 @@ function stepSoldier(s,dt){
       const sp=accel(s,t.speed*(sq.order.kind==='charge'?1.3:1)*m*crowdMul(s),dt);
       move(s,Math.cos(a)*sp*dt,Math.sin(a)*sp*dt); s.step+=dt*(2+s.sp*.12);
       if(t.kind==='cav'&&sp>68&&!(flags&WOOD)){ s.charge=true;
-        if(quality&&R()<dt*4) burst(s.x,s.y,1,'dust'); }
+        if(quality&&Math.random()<dt*4) burst(s.x,s.y,1,'dust'); }
       moved=true;
     }
   } else if(s.wall&&!s.wall.dead&&(t.kind==='cav'||t.kind==='ranged')){
@@ -2196,7 +2255,10 @@ function separate(s,dt){
   for(let i=0;i<NEARn;i++){
     const o=NEAR[i]; if(o===s||!o.alive) continue;
     if(!!o.sq.t.air!==!!s.sq.t.air) continue;        // one is flying
-    const md=rs+radOf(o);
+    // Men of one squad pack into their formation; men of another are kept at
+    // arm's length, so two units cannot comb through one another. An enemy gets
+    // the smallest buffer of all - closing to melee has to stay possible.
+    const md=(rs+radOf(o))*(o.sq===s.sq?1:o.sq.team!==s.sq.team?1.1:1.5);
     let dx=s.x-o.x,dy=s.y-o.y;
     const d2=dx*dx+dy*dy;
     if(d2>=md*md) continue;
@@ -2651,8 +2713,10 @@ function buildLine(team,what,x1,y1,x2,y2){
     }
   } else if(what==='wire'){
     stampLine((x1+x2)/2,(y1+y2)/2,a,len,7,WIRED); paintWire((x1+x2)/2,(y1+y2)/2,a,len);
+    noteWork(what,(x1+x2)/2,(y1+y2)/2,a,len);
   } else if(what==='trench'){
     stampLine((x1+x2)/2,(y1+y2)/2,a,len,11,TRENCHED); paintTrench((x1+x2)/2,(y1+y2)/2,a,len);
+    noteWork(what,(x1+x2)/2,(y1+y2)/2,a,len);
   } else {
     const n=Math.max(2,Math.round(len/38));
     for(let i=0;i<=n;i++){
@@ -2682,8 +2746,10 @@ const BUILDT={wall:7,wire:6,trench:11,mine:5};
 const isWork=k=>k==='wall'||k==='wire'||k==='trench'||k==='mine';
 function buildWork(team,what,x,y,a){
   if(what==='wall') walls.push({team,x,y,a,len:WALL.len,hp:WALL.hp,max:WALL.hp,dead:false});
-  else if(what==='wire'){ stampLine(x,y,a,WIRE.len,7,WIRED); paintWire(x,y,a,WIRE.len); }
-  else if(what==='trench'){ stampLine(x,y,a,TRENCH.len,11,TRENCHED); paintTrench(x,y,a,TRENCH.len); }
+  else if(what==='wire'){ stampLine(x,y,a,WIRE.len,7,WIRED); paintWire(x,y,a,WIRE.len);
+    noteWork(what,x,y,a,WIRE.len); }
+  else if(what==='trench'){ stampLine(x,y,a,TRENCH.len,11,TRENCHED); paintTrench(x,y,a,TRENCH.len);
+    noteWork(what,x,y,a,TRENCH.len); }
   else if(what==='mine'){
     const cs=Math.cos(a),sn=Math.sin(a);
     for(let i=-1;i<=1;i++) mines.push({team,x:x+cs*i*34+rnd(-9,9),y:y+sn*i*34+rnd(-9,9),t:0});
@@ -2816,19 +2882,29 @@ function cmdTeam(){
   return hot.stage==='orders'?hot.team:null;
 }
 function viewTeam(){ return cmdTeam()||(mode==='hot'?hot.team:'blue'); }
+function deployRows(){
+  el('deployRow').style.display='flex'; el('startBattle').style.display='block';
+  el('legionRow').style.display='none'; el('orders').style.display='none';
+  el('infoRow').style.display='flex';
+}
+function battleRows(){
+  el('deployRow').style.display='flex'; el('startBattle').style.display='none';
+  el('legionRow').style.display='flex'; el('orders').style.display='flex';
+  el('infoRow').style.display='flex';
+}
 function beginGame(b){
-  unlockAudio();                                 // must happen inside the click
+  unlockAudio();
+  todStart=(START_HOURS.find(h=>h.key===hourKey)||START_HOURS[1]).at;
+  tod=todStart; sun=sunDir(tod); dayLight=lightAt(tod); night=isNight(tod);                                 // must happen inside the click
   sandbox=b>=999999; budget=b;
   matchSeed=matchSeed||1; srand(matchSeed); spent={blue:0,red:0}; earned={blue:0,red:0}; lvl={blue:1,red:1}; xp={blue:0,red:0}; wave=0; lastWave=-1; placing=null; timeUp=false; depTime=180; battleTime=0; speed=1; paused=false; syncSpeed();
   squads=[];soldiers=[];shots=[];parts=[];pings=[];walls=[];fires=[];castles=[];mines=[];bodies=[];bases=[];selected=[];
   stats={blue:0,red:0}; hot={stage:'orders',team:'blue',t:45,round:1};
-  genTerrain(); resetTerritory(); depTeam='blue'; placing=null; bindMode=false;
+  works=[]; genTerrain(); resetTerritory(); depTeam='blue'; placing=null; bindMode=false;
   if(mode==='ai') autoDeploy('red',b);
   phase='deploy';
   el('startVeil').style.display='none'; el('endVeil').style.display='none'; el('menuVeil').style.display='none';
-  el('deployRow').style.display='flex'; el('startBattle').style.display='block';
-  el('legionRow').style.display='none'; el('orders').style.display='none';
-  el('infoRow').style.display='flex';
+  deployRows();
   buildPalette(); paintSizes(); setBuy(true,true); paintPoints(); focusZone();
 }
 function focusZone(){
@@ -2849,9 +2925,7 @@ function startBattle(){
   holdScreenAwake(true);
   remMode=false; el('remBtn').classList.remove('on');
   phase='battle'; selected=[]; battleTime=0; pressT=115; fit();
-  el('deployRow').style.display='flex'; el('startBattle').style.display='none';
-  el('legionRow').style.display='flex'; el('orders').style.display='flex';
-  el('infoRow').style.display='flex';
+  battleRows();
   setBuy(false,true);
   // units already marching to a position keep going — the horn does not cancel your plan
   for(const sq of squads) if(!sq.order||sq.order.kind==='hold') order(sq,{kind:'hold'});
@@ -2937,6 +3011,409 @@ function openMenu(){
 }
 function closeMenu(){ paused=false; el('menuVeil').style.display='none'; resumeAudio(); }
 
+/* ===================== saved battles ===================== */
+// A save is the whole battle, not a replay. The ground is regenerated from the
+// match seed - which is what keeps a save small - and everything the fighting
+// has changed since then is written on top of it: the grid cells that differ,
+// the felled trees, the collapsed houses, the armies, and every clock the next
+// tick will read. Litter that no rule reads back - particles, bodies, rings,
+// weather - is not saved; it costs bytes and nobody misses it.
+//
+// Numbers go out at full precision on purpose. Anything the simulation reads,
+// however cosmetic it looks, decides how many times R() is called on the next
+// tick, so a value rounded for tidiness would put a loaded battle on a slightly
+// different course from the one that was saved. The RNG state is restored last,
+// after everything else has stopped disturbing it.
+const SAVE_V=1;
+let works=[];                          // trench and wire lines, so a load can repaint them
+// A work is stamped into the terrain grid, and the grid is what a save carries.
+// The line itself is kept only so the trench or the wire can be painted back
+// into the ground layer on load; the oldest are dropped once the list is long.
+function noteWork(what,x,y,a,len){
+  works.push({what,x,y,a,len});
+  if(works.length>400) works.shift();
+}
+const TEAMN={blue:1,red:2}, TEAMS=[null,'blue','red'];
+
+// Churn only ever grows by one fixed step per pass, so a cell is described
+// completely by how many steps it has taken. Storing the count rather than the
+// value is what keeps it exact: the same additions through the same Float32Array
+// give back the same float, where a decimal written out and read back would not.
+const CHURN_STEP=.035, CHURN_MAX=32;
+const CHURN_VAL=(()=>{
+  const a=new Float32Array(CHURN_MAX+1),t=new Float32Array(1);
+  for(let k=1;k<=CHURN_MAX;k++){ t[0]=Math.min(1,t[0]+CHURN_STEP); a[k]=t[0]; }
+  return a;
+})();
+function churnSteps(v){
+  for(let k=0;k<=CHURN_MAX;k++) if(CHURN_VAL[k]===v) return k;
+  let best=0,bd=1e9;                              // never expected; take the closest
+  for(let k=0;k<=CHURN_MAX;k++){ const d=Math.abs(CHURN_VAL[k]-v); if(d<bd){bd=d;best=k;} }
+  return best;
+}
+
+function snapshot(){
+  const qi=new Map(); squads.forEach((sq,i)=>qi.set(sq,i));
+  const wi=new Map(); walls.forEach((w,i)=>wi.set(w,i));
+  const bi=new Map(); buildings.forEach((b,i)=>bi.set(b,i));
+  const si=new Map();
+  squads.forEach((sq,i)=>sq.soldiers.forEach((s,j)=>si.set(s,i*4096+j)));
+
+  const packOrd=o=>{
+    const p={k:o.kind};
+    if(o.x!==undefined){ p.x=o.x; p.y=o.y; }
+    if(o.sq) p.q=qi.has(o.sq)?qi.get(o.sq):-1;
+    if(o.what){
+      p.w=o.what; p.t=o.t; p.mx=o.max;
+      if(o.x1!==undefined) p.ln=[o.x1,o.y1,o.x2,o.y2];
+      if(o.a!==undefined) p.a=o.a;
+    }
+    return p;
+  };
+  // A body that is down keeps its place in the squad, because a formation is
+  // laid out by slot - but nothing else about it is ever read again, so it goes
+  // out as a single 0.
+  const packSol=s=>s.alive?[
+    s.x,s.y,s.hp,s.cd,s.seek,s.charge?1:0,s.ang,s.step,s.jam,s.hull,s.turret,s.rec,
+    s.kick,s.sp,s.crowd||0,s.moved||0,s.v,s.trk||0,
+    (s.tgt&&s.tgt.alive&&si.has(s.tgt))?si.get(s.tgt):-1,
+    (s.wall&&wi.has(s.wall))?wi.get(s.wall):-1,
+    s.cas?TEAMN[s.cas.team]:0]:0;
+
+  const tg=[];
+  for(let i=0;i<tGrid.length;i++) if(!tGrid0||tGrid[i]!==tGrid0[i]) tg.push(i,tGrid[i]);
+  const ch=[];
+  for(let i=0;i<cGrid.length;i++) if(cGrid[i]>0) ch.push(i,churnSteps(cGrid[i]));
+
+  return {
+    v:SAVE_V, seed:matchSeed, rng:seed(),
+    map:mapType, mode, diff, budget, sandbox:sandbox?1:0, cap:capChoice, limit:battleLimit,
+    phase, depTeam, depTime, size:troopSize, bt:battleTime,
+    wave, lw:lastWave, up:timeUp?1:0, speed, lc:lastCall?1:0, nid:nextId,
+    ang:placeAng, rem:remMode?1:0,
+    spent:{blue:spent.blue,red:spent.red}, earned:{blue:earned.blue,red:earned.red},
+    lvl:{blue:lvl.blue,red:lvl.red}, xp:{blue:xp.blue,red:xp.red},
+    stats:{blue:stats.blue,red:stats.red},
+    hot:{stage:hot.stage,team:hot.team,t:hot.t,round:hot.round},
+    tm:{ai:aiT,buy:aiBuy,press:pressT,terr:terrT,base:baseT,occ:occT,churn:churnT,
+        mine:mineT,fire:fireT,cas:castleT,amb:ambT,acc,clock,tod:todStart,hour:hourKey},
+    wind:{a:wind.a,v:wind.v}, sky,
+    cam:{x:cam.x,y:cam.y,s:cam.s},
+    own:Array.from(terrOwn), hold:Array.from(terrHold),
+    castles:castles.map(c=>({t:c.team,hp:c.hp,d:c.dead?1:0,cd:c.cd,b:c.burn})),
+    bases:bases.map(b=>({t:b.team,hp:b.hp,c:b.cap,d:b.dead?1:0})),
+    blds:buildings.map((b,i)=>(b.dead||b.hp<b.max||b.hold)
+      ?{i,hp:b.hp,d:b.dead?1:0,h:b.hold?TEAMN[b.hold]:0,ti:b.tint||0}:null)
+      .filter(Boolean),
+    fell:trees.map((t,i)=>t.dead?i:-1).filter(i=>i>=0),
+    // A wall laid without an angle lies north-south (see wallLocal), so the
+    // difference between "no angle" and "angle zero" is real: keep it.
+    walls:walls.map(w=>({t:w.team,x:w.x,y:w.y,a:w.a===undefined?null:w.a,l:w.len,
+      hp:w.hp,mx:w.max,d:w.dead?1:0,f:w.fixed?1:0,r:w.rubble?1:0})),
+    mines:mines.map(m=>[TEAMN[m.team],m.x,m.y]),
+    fires:fires.map(f=>[f.j,f.t,f.life,f.spread]),
+    shots:shots.map(a=>({k:a.kind,sx:a.sx,sy:a.sy,tx:a.tx,ty:a.ty,t:a.t,d:a.dur,
+      lb:a.lob?1:0,tm:TEAMN[a.team],dm:a.dmg,sp:a.splash||0,pi:a.pierce||0,av:a.av||1,
+      st:a.stone?TEAMN[a.stone.team]:0})),
+    works:works.map(w=>[w.what==='wire'?0:1,w.x,w.y,w.a,w.len]),
+    // Scenery, kept so a wreck goes on smoking and the sky does not jump.
+    plumes:plumes.map(p=>[p.x,p.y,p.t]),
+    clouds:clouds.map(c=>[c.x,c.y,c.rx,c.ry,c.v,c.a]),
+    civs:civs.filter(c=>c.alive&&bi.has(c.home)).map(c=>[c.x,c.y,c.hx,c.hy,bi.get(c.home),
+      c.px,c.py,c.job==='farmer'?1:0,c.st,c.out,c.t,c.spd,c.ang,c.ph,c.calm]),
+    sel:selected.map(sq=>qi.has(sq)?qi.get(sq):-1).filter(i=>i>=0),
+    squads:squads.map(q=>({id:q.id,tm:q.team,ty:q.type,x:q.fx,y:q.fy,fa:q.facing,
+      fm:q.formation,o:packOrd(q.order),ini:q.initial,al:q.alive,lg:q.legion,co:q.cost,
+      ro:q.routed?1:0,mo:q.moraleT,dg:q.disengage,ct:q.crossT,cr:q.crossing?1:0,
+      cw:q.crossWide?1:0,se:q.seen?1:0,st:q.seenT,gn:q.gone?1:0,fl:q.flag,
+      sl:q.slide||0,sk:q.stuck||0,tf:q.tf===undefined?-1:q.tf,men:q.soldiers.map(packSol)})),
+    order:soldiers.map(s=>si.has(s)?si.get(s):-1).filter(k=>k>=0),
+    tg, ch
+  };
+}
+
+// What the load list shows about a save, so the list can be drawn without
+// reading a whole battle back in.
+function saveMeta(auto){
+  return {
+    auto:auto?1:0, map:MAPS[mapType].name, mode, diff, phase,
+    t:phase==='battle'?fmt(battleTime):'deploying',
+    lvl:lvl.blue, men:liveCount('blue'), foe:liveCount('red'),
+    land:Math.round(landShare('blue')*100), name:prof.name
+  };
+}
+
+// A tree that came down before the save was written: no toppling, no leaves,
+// just the cover gone and the trunk already lying on the ground.
+function fellQuiet(t){
+  if(!t||t.dead) return;
+  t.dead=true; t.fall=1; t.fa=0;
+  for(const i of t.cells) if(woodN[i]>0&&--woodN[i]===0) tGrid[i]&=~WOOD;
+  if(canopyCtx){
+    canopyCtx.globalCompositeOperation='destination-out';
+    canopyCtx.beginPath(); canopyCtx.arc(t.x,t.y,t.s*1.3,0,6.28); canopyCtx.fill();
+    canopyCtx.globalCompositeOperation='source-over';
+  }
+  layTrunk(t);
+}
+
+function restoreBattle(d){
+  // Everything that could make this impossible is checked before a single
+  // global is touched: a half-restored battle is worse than a refused load.
+  if(!d||d.v!==SAVE_V) throw new Error('saved by another build');
+  if(!MAPS[d.map]) throw new Error('unknown battlefield '+d.map);
+  if(!Array.isArray(d.squads)||!Array.isArray(d.tg)) throw new Error('save is malformed');
+  for(const q of d.squads) if(!UNITS[q.ty]) throw new Error('unknown unit '+q.ty);
+
+  mapType=d.map; mode=d.mode==='hot'?'hot':'ai'; diff=DIFF[d.diff]?d.diff:'normal';
+  budget=d.budget; sandbox=!!d.sandbox; capChoice=d.cap|0; battleLimit=d.limit||0;
+  matchSeed=d.seed>>>0||1;
+  squads=[];soldiers=[];shots=[];parts=[];pings=[];walls=[];fires=[];castles=[];
+  mines=[];bodies=[];bases=[];selected=[];rings=[];plumes=[];weather=[];falling=[];
+  works=[]; placing=null; building=null; drawing=null; bindMode=false; selectMode=false;
+  box.on=false; ptr.down=false; pinch=null; lastSq=null;
+
+  genTerrain();                      // same seed, same ground
+  resetTerritory();
+
+  // ---- what the fighting did to the ground ----
+  for(const i of d.fell||[]) fellQuiet(trees[i]);
+  treesDown=(d.fell||[]).length;
+  for(const b of d.blds||[]){
+    const bd=buildings[b.i]; if(!bd) continue;
+    bd.hp=b.hp; bd.tint=b.ti||0; bd.hold=TEAMS[b.h||0]||null;
+    if(b.d){ razeBuilding(bd); paintRuin(bd); }
+  }
+  for(let k=0;k<d.tg.length;k+=2) tGrid[d.tg[k]]=d.tg[k+1];   // the grid has the last word
+  cGrid=new Float32Array(TW*TH); pGrid=new Uint8Array(TW*TH);
+  for(let k=0;k<(d.ch||[]).length;k+=2){
+    const i=d.ch[k],v=CHURN_VAL[clamp(d.ch[k+1],0,CHURN_MAX)];
+    if(i<0||i>=cGrid.length) continue;
+    cGrid[i]=v;
+    if(v>.75){ pGrid[i]=2; paintMud(i%TW,(i/TW)|0,2); }
+    else if(v>.35){ pGrid[i]=1; paintMud(i%TW,(i/TW)|0,1); }
+  }
+  for(const w of d.works||[]){
+    const what=w[0]===0?'wire':'trench';
+    works.push({what,x:w[1],y:w[2],a:w[3],len:w[4]});
+    if(what==='wire') paintWire(w[1],w[2],w[3],w[4]); else paintTrench(w[1],w[2],w[3],w[4]);
+  }
+
+  // ---- the works, the keeps and the bases ----
+  walls=(d.walls||[]).map(w=>{
+    const o={team:w.t,x:w.x,y:w.y,len:w.l,hp:w.hp,max:w.mx,
+      dead:!!w.d,fixed:!!w.f,rubble:!!w.r};
+    if(w.a!==null&&w.a!==undefined) o.a=w.a;
+    return o;
+  });
+  mines=(d.mines||[]).map(m=>({team:TEAMS[m[0]],x:m[1],y:m[2],t:0}));
+  fires=(d.fires||[]).map(f=>({j:f[0],x:(f[0]%TW)*TG+TG/2,y:((f[0]/TW)|0)*TG+TG/2,
+    t:f[1],life:f[2],spread:f[3]}));
+  (d.castles||[]).forEach((c,i)=>{ const k=castles[i]; if(!k) return;
+    k.team=c.t; k.hp=c.hp; k.dead=!!c.d; k.cd=c.cd; k.burn=c.b; });
+  (d.bases||[]).forEach((b,i)=>{ const k=bases[i]; if(!k) return;
+    k.team=b.t; k.hp=b.hp; k.cap=b.c; k.dead=!!b.d; });
+  plumes=(d.plumes||[]).map(p=>({x:p[0],y:p[1],t:p[2]}));
+  if(d.clouds&&d.clouds.length===clouds.length)
+    clouds=d.clouds.map(c=>({x:c[0],y:c[1],rx:c[2],ry:c[3],v:c[4],a:c[5]}));
+
+  // ---- the armies ----
+  squads=d.squads.map(q=>{
+    const t=UNITS[q.ty];
+    const sq={id:q.id,team:q.tm,type:q.ty,t,fx:q.x,fy:q.y,facing:q.fa,formation:q.fm,
+      order:{kind:'hold'},initial:q.ini,alive:q.al,legion:q.lg,cost:q.co,routed:!!q.ro,
+      moraleT:q.mo,disengage:q.dg,crossT:q.ct,crossing:!!q.cr,crossWide:!!q.cw,
+      seen:!!q.se,seenT:q.st,soldiers:[],gone:!!q.gn,fw:0,fd:0,flag:q.fl,
+      slide:q.sl||0,stuck:q.sk||0};
+    if(q.tf>=0) sq.tf=q.tf;                        // the sector the machine gave it
+    sq.soldiers=q.men.map((m,i)=>m
+      ?{sq,x:m[0],y:m[1],hp:m[2],max:t.hp,alive:true,cd:m[3],tgt:null,wall:null,cas:null,
+        seek:m[4],charge:!!m[5],idx:i,ang:m[6],step:m[7],jam:m[8],hull:m[9],turret:m[10],
+        rec:m[11],kick:m[12],v:m[16],moved:m[15],sp:m[13],ramp:0,crowd:m[14],trk:m[17]}
+      :{sq,x:q.x,y:q.y,hp:0,max:t.hp,alive:false,cd:0,tgt:null,wall:null,cas:null,seek:0,
+        charge:false,idx:i,ang:q.fa,step:0,jam:0,hull:q.fa,turret:q.fa,rec:0,kick:0,v:0,
+        moved:0,sp:0,ramp:0,crowd:0,trk:0});
+    footprint(sq);
+    return sq;
+  });
+  const findCastle=n=>n?castles.find(c=>c.team===TEAMS[n])||null:null;
+  const findSol=k=>{
+    if(k<0) return null;
+    const sq=squads[(k/4096)|0], s=sq&&sq.soldiers[k%4096];
+    return s&&s.alive?s:null;
+  };
+  d.squads.forEach((q,i)=>{
+    const sq=squads[i],o=q.o||{k:'hold'};
+    const ord={kind:o.k};
+    if(o.x!==undefined){ ord.x=o.x; ord.y=o.y; }
+    if(o.q!==undefined) ord.sq=squads[o.q]||null;
+    if(o.w){
+      ord.what=o.w; ord.t=o.t; ord.max=o.mx;
+      if(o.ln){ ord.x1=o.ln[0]; ord.y1=o.ln[1]; ord.x2=o.ln[2]; ord.y2=o.ln[3]; }
+      if(o.a!==undefined) ord.a=o.a;
+    }
+    sq.order=ord;
+    q.men.forEach((m,j)=>{
+      if(!m) return;
+      const s=sq.soldiers[j];
+      s.tgt=findSol(m[18]);
+      s.wall=m[19]>=0?walls[m[19]]||null:null;
+      s.cas=findCastle(m[20]);
+    });
+  });
+  soldiers=(d.order||[]).map(k=>{ const sq=squads[(k/4096)|0];
+    return sq?sq.soldiers[k%4096]:null; }).filter(Boolean);
+  shots=(d.shots||[]).map(a=>{
+    const k=a.d>0?clamp(a.t/a.d,0,1):1;
+    return {kind:a.k,sx:a.sx,sy:a.sy,x:a.sx+(a.tx-a.sx)*k,y:a.sy+(a.ty-a.sy)*k,
+      tx:a.tx,ty:a.ty,t:a.t,dur:a.d,lob:!!a.lb,team:TEAMS[a.tm],dmg:a.dm,splash:a.sp,
+      pierce:a.pi,av:a.av,stone:findCastle(a.st),
+      arc:a.lb?Math.sin(k*Math.PI)*Math.min(80,dist(a.sx,a.sy,a.tx,a.ty)*.16):0};
+  });
+  if(d.civs) civs=d.civs.map(c=>({x:c[0],y:c[1],hx:c[2],hy:c[3],home:buildings[c[4]],
+    px:c[5],py:c[6],job:c[7]?'farmer':'villager',st:c[8],out:c[9],t:c[10],spd:c[11],
+    ang:c[12],ph:c[13],calm:c[14],alive:true})).filter(c=>c.home);
+  gunfire=[];
+
+  // ---- the numbers, the clocks and the camera ----
+  terrOwn=Uint8Array.from(d.own||[]); terrHold=Float32Array.from(d.hold||[]);
+  if(terrOwn.length!==TX*TY) resetTerritory();
+  spent={blue:d.spent.blue,red:d.spent.red}; earned={blue:d.earned.blue,red:d.earned.red};
+  lvl={blue:d.lvl.blue,red:d.lvl.red}; xp={blue:d.xp.blue,red:d.xp.red};
+  stats={blue:d.stats.blue,red:d.stats.red};
+  hot={stage:d.hot.stage,team:d.hot.team,t:d.hot.t,round:d.hot.round};
+  depTeam=d.depTeam==='red'?'red':'blue'; depTime=d.depTime; troopSize=d.size||1;
+  battleTime=d.bt; wave=d.wave|0; lastWave=d.lw; timeUp=!!d.up; lastCall=!!d.lc;
+  nextId=d.nid; placeAng=d.ang; remMode=!!d.rem; speed=d.speed;
+  const T=d.tm||{};
+  aiT=T.ai||0; aiBuy=T.buy||0; pressT=T.press||0; terrT=T.terr||0; baseT=T.base||0;
+  occT=T.occ||0; churnT=T.churn||0; mineT=T.mine||0; fireT=T.fire||0; castleT=T.cas||0;
+  ambT=T.amb||0; acc=T.acc||0; clock=T.clock||0;
+  wind={a:d.wind.a,v:d.wind.v}; sky=d.sky;
+  if(typeof T.tod==='number') todStart=T.tod;
+  if(START_HOURS.some(h=>h.key===T.hour)) hourKey=T.hour;
+  stepClock(0);                      // the hour, the light and the shadows follow
+  cam={x:d.cam.x,y:d.cam.y,s:d.cam.s};
+  selected=(d.sel||[]).map(i=>squads[i]).filter(Boolean);
+  phase=d.phase==='deploy'?'deploy':'battle';
+  paused=false;
+  {                                  // the view box tick() reads, as the next draw will set it
+    const w=cv.width/dpr,h=cv.height/dpr,a=s2w(0,0),b=s2w(w,h);
+    vx0=a.x-40; vy0=a.y-40; vx1=b.x+40; vy1=b.y+40;
+  }
+  srand(d.rng);                      // last, so nothing above disturbs the stream
+
+  // ---- the screen ----
+  el('startVeil').style.display='none'; el('endVeil').style.display='none';
+  el('menuVeil').style.display='none'; el('surVeil').style.display='none';
+  el('passVeil').style.display='none';
+  if(phase==='deploy') deployRows(); else battleRows();
+  el('done').style.display=(phase==='battle'&&mode==='hot')?'block':'none';
+  el('remBtn').classList.toggle('on',remMode);
+  el('rotBtn').textContent='Lay '+ANGNAME[Math.max(0,ANGS.indexOf(placeAng))];
+  el('bind').classList.remove('on'); el('selBtn').classList.remove('on');
+  // the start screen carries the loaded match settings, not the ones the
+  // player last picked, in case they go back to it
+  buildMapPick(); buildDiffPick(); buildCapPick(); buildHourPick();
+  buildPalette(); paintSizes(); setBuy(phase==='deploy',true); paintPoints();
+  syncSpeed(); hudAcc=0; lastInfo=''; lastPhase=''; lastClock=''; paintHud(0);
+  if(phase==='battle') holdScreenAwake(true);
+  resumeAudio();
+}
+
+/* ---- the save and load screen ---- */
+let saveMode='load';
+function slotLine(meta){
+  const m=meta||{};
+  const head=(m.auto?'Autosave · ':'')+(m.map||'Battle')+' · '+(m.t||'');
+  const foot='Level '+(m.lvl||1)+' · '+(m.men||0)+' v '+(m.foe||0)+' · '
+    +(m.land===undefined?'':m.land+'% held · ')
+    +(DIFF[m.diff]?DIFF[m.diff].name:'')+(m.mode==='hot'?' · two players':'');
+  return [head,foot];
+}
+function buildSaveList(){
+  const list=el('saveList'); if(!list) return;
+  list.innerHTML='';
+  const rows=SAVES.list();
+  if(!rows.length){
+    const p=document.createElement('div'); p.className='none';
+    p.textContent=saveMode==='save'?'No saves yet — use the button below.'
+                                   :'No saved battles on this device.';
+    list.appendChild(p);
+  }
+  for(const r of rows){
+    const line=slotLine(r.meta);
+    const row=document.createElement('div'); row.className='slot';
+    const b=document.createElement('button');
+    const t1=document.createElement('b'); t1.textContent=line[0];
+    const t2=document.createElement('span'); t2.textContent=line[1];
+    b.appendChild(t1); b.appendChild(t2);
+    b.onclick=()=>{ if(saveMode==='save') doSave(r.id); else doLoad(r.id); };
+    const k=document.createElement('button');
+    k.className='kill'; k.textContent='×'; k.title='Delete this save';
+    k.onclick=()=>{ SAVES.drop(r.id); buildSaveList(); refreshLoadButton(); toast('Save deleted'); };
+    row.appendChild(b); row.appendChild(k); list.appendChild(row);
+  }
+  const left=SAVES.MAX_SLOTS-SAVES.used();
+  el('saveNew').style.display=saveMode==='save'?'block':'none';
+  el('saveNote').textContent=saveMode==='save'
+    ? 'Tap a battle to overwrite it — '+left+' of '+SAVES.MAX_SLOTS+' slots free.'
+    : 'Tap a battle to take command of it again.';
+}
+function openSaves(m){
+  saveMode=m==='save'?'save':'load';
+  el('saveTitle').innerHTML=(saveMode==='save'?'Save this battle':'Saved battles')
+    +'<small>kept on this device</small>';
+  SAVES.prune();
+  buildSaveList();
+  el('saveVeil').style.display='flex';
+}
+function closeSaves(){
+  el('saveVeil').style.display='none';
+  if(phase==='start') el('startVeil').style.display='flex';
+  else if(paused) el('menuVeil').style.display='flex';
+}
+function doSave(id){
+  if(phase!=='deploy'&&phase!=='battle'){ toast('There is no battle to save'); return; }
+  let state;
+  try{ state=snapshot(); }
+  catch(e){ console.warn('[iron-front] snapshot failed:',e); toast('This battle could not be saved'); return; }
+  const res=SAVES.put(id||null,saveMeta(false),state);
+  if(!res.ok){
+    toast(res.why==='slots'
+      ? 'All '+SAVES.MAX_SLOTS+' slots are full — delete one first'
+      : 'No room left on this device — delete a save');
+    return;
+  }
+  buildSaveList(); refreshLoadButton(); toast(id?'Save overwritten':'Battle saved');
+}
+function doLoad(id){
+  const rec=SAVES.get(id);
+  if(!rec){ toast('That save could not be read'); buildSaveList(); refreshLoadButton(); return; }
+  unlockAudio();                                 // still inside the click
+  try{ restoreBattle(rec.state); }
+  catch(e){
+    console.warn('[iron-front] load failed:',e);
+    phase='start'; paused=false;
+    el('startVeil').style.display='flex';
+    el('saveVeil').style.display='none';
+    toast('That save could not be loaded');
+    return;
+  }
+  el('saveVeil').style.display='none';
+  toast('Battle restored');
+}
+// One rolling autosave, written when the game goes into the background: the
+// case where a phone kills the tab and the battle would otherwise be gone.
+function autosave(){
+  if(phase!=='deploy'&&phase!=='battle') return false;
+  try{ return SAVES.put(SAVES.AUTO_ID,saveMeta(true),snapshot()).ok; }
+  catch(e){ return false; }
+}
+function refreshLoadButton(){
+  const b=el('sLoad'); if(!b) return;
+  b.style.display=SAVES.list().length?'block':'none';
+}
 /* ===================== loop ===================== */
 let last=performance.now(),acc=0;
 let frameErr=0;
@@ -3000,7 +3477,7 @@ function stepAmbient(dt){
   const wx=Math.cos(wind.a)*wind.v,wy=Math.sin(wind.a)*wind.v;
   for(const c of clouds){
     c.x+=(c.v+wx*4)*dt; c.y+=wy*2*dt;
-    if(c.x-c.rx>W+120){ c.x=-c.rx-rnd(60,400); c.y=rnd(-100,H); }
+    if(c.x-c.rx>W+120){ c.x=-c.rx-vr(60,400); c.y=vr(-100,H); }
     if(c.y-c.ry>H+140) c.y=-c.ry;
     if(c.y+c.ry<-140) c.y=H+c.ry;
   }
@@ -3012,34 +3489,35 @@ function stepAmbient(dt){
   ambT-=dt; if(ambT>0) return; ambT=.55;
   if(quality){
     for(const b of buildings){                       // hearth smoke from the villages
-      if(!b.hearth||R()>.35) continue;
+      if(!b.hearth||Math.random()>.35) continue;
       if(b.x<vx0||b.x>vx1||b.y<vy0||b.y>vy1) continue;
-      parts.push({x:b.x+rnd(-4,4),y:b.y-b.h*.5,vx:wx*7+rnd(-3,3),vy:-rnd(7,13),
-        t:rnd(1.6,3),r:rnd(3,6),type:'smoke'});
+      parts.push({x:b.x+vr(-4,4),y:b.y-b.h*.5,vx:wx*7+vr(-3,3),vy:-vr(7,13),
+        t:vr(1.6,3),r:vr(3,6),type:'smoke'});
     }
     for(let i=0;i<soldiers.length;i+=3){             // splashing through the fords
       const s=soldiers[i];
       if(!s.alive||!(terrainAt(s.x,s.y)&FORD)) continue;
-      if(R()<.5) parts.push({x:s.x+rnd(-4,4),y:s.y+rnd(-3,3),
-        vx:rnd(-16,16),vy:-rnd(6,20),t:rnd(.3,.6),r:rnd(1.3,2.6),type:'splash'});
+      if(Math.random()<.5) parts.push({x:s.x+vr(-4,4),y:s.y+vr(-3,3),
+        vx:vr(-16,16),vy:-vr(6,20),t:vr(.3,.6),r:vr(1.3,2.6),type:'splash'});
     }
-    if(R()<.6){                            // leaves and dust on the wind
-      const x=rnd(vx0,vx1),y=rnd(vy0,vy1);
-      if(terrainAt(x,y)&(WOOD|SCORCH)) parts.push({x,y,vx:wx*26+rnd(-8,8),vy:wy*26+rnd(-8,8),
-        t:rnd(1.4,2.6),r:rnd(1.4,2.6),type:'leaf'});
+    if(Math.random()<.6){                  // leaves and dust on the wind
+      const x=vr(vx0,vx1),y=vr(vy0,vy1);
+      if(terrainAt(x,y)&(WOOD|SCORCH)) parts.push({x,y,vx:wx*26+vr(-8,8),vy:wy*26+vr(-8,8),
+        t:vr(1.4,2.6),r:vr(1.4,2.6),type:'leaf'});
     }
   }
 }
 function tick(dt){
+  stepClock(dt);
   stepAmbient(dt); stepWeather(dt);
   if(shakeAmp>0){ shakeAge+=dt; if(shakeAge>1.1){ shakeAmp=0; shakeAge=0; } }
   for(let i=rings.length-1;i>=0;i--){ const r=rings[i]; r.t-=dt; if(r.t<=0) rings.splice(i,1); }
   for(let i=plumes.length-1;i>=0;i--){
     const q=plumes[i]; q.t-=dt;
     if(q.t<=0){ plumes.splice(i,1); continue; }
-    if(quality&&R()<dt*4)
-      parts.push({x:q.x+rnd(-7,7),y:q.y+rnd(-5,5),vx:Math.cos(wind.a)*16+rnd(-6,6),
-        vy:-rnd(16,34),t:rnd(1.6,3.2),r:rnd(4,9),type:'smoke'});
+    if(quality&&Math.random()<dt*4)
+      parts.push({x:q.x+vr(-7,7),y:q.y+vr(-5,5),vx:Math.cos(wind.a)*16+vr(-6,6),
+        vy:-vr(16,34),t:vr(1.6,3.2),r:vr(4,9),type:'smoke'});
   }
   for(let i=pings.length-1;i>=0;i--){ pings[i].t-=dt; if(pings[i].t<=0) pings.splice(i,1); }
   for(let i=bodies.length-1;i>=0;i--){ bodies[i].t-=dt; if(bodies[i].t<=0) bodies.splice(i,1); }
@@ -3171,7 +3649,10 @@ function makeFogDot(){
   rg.addColorStop(1,'rgba(255,255,255,0)');
   g.fillStyle=rg; g.fillRect(0,0,128,128);
 }
-const sightOf=sq=>(sq.t.sight||430)*(elevAt(sq.fx,sq.fy)>=2?1.25:1);
+// Darkness closes the fog in. Never below a third: a battlefield lights itself
+// with burning wreckage, and a unit that cannot see at all cannot fight at all.
+const sightOf=sq=>(sq.t.sight||430)*(elevAt(sq.fx,sq.fy)>=2?1.25:1)
+  *(.34+.66*dayLight);
 function updateVision(dt){
   const vt=viewTeam();
   const eyes=[];
@@ -3951,6 +4432,27 @@ function draw(){
   }
 
   ctx.setTransform(dpr,0,0,dpr,0,0);
+
+  // The light of the hour, laid over the finished ground and everything standing
+  // on it. Applied here, at the point the world stops and the interface starts,
+  // so the fog, the labels and the HUD stay at full contrast — a dark battle
+  // should be hard to fight, not hard to read.
+  const amb=ambientAt(tod);
+  if(amb){
+    ctx.fillStyle='rgba('+amb[0]+','+amb[1]+','+amb[2]+','+amb[3]+')';
+    ctx.fillRect(0,0,w,h);
+    // Muzzle flashes, fires and burning wrecks are most of what you navigate by
+    // after dark, so let them punch back through the wash.
+    if(night&&quality){
+      ctx.save();
+      ctx.globalCompositeOperation='lighter';
+      ctx.setTransform(cam.s*dpr,0,0,cam.s*dpr,cam.x*dpr,cam.y*dpr);
+      for(const f of fires) glow(f.x,f.y,52,.34,'#FFB760');
+      ctx.restore();
+      ctx.setTransform(dpr,0,0,dpr,0,0);
+    }
+  }
+
   if(quality===1&&sky!=='clear'){                 // weather over the whole scene
     if(sky==='rain'){
       ctx.strokeStyle='rgba(190,214,232,.34)'; ctx.lineWidth=1.1;
@@ -4317,7 +4819,9 @@ function paintHud(dt){
       b.classList.toggle('on',n>0&&selected.length>0&&selected.every(s=>s.legion===+b.dataset.leg));
     });
   }
-  if(ph!==lastPhase){ el('phase').textContent=ph; lastPhase=ph; }
+  // the hour rides along with the phase line, so you can see the light going
+  const ph2=phase==='battle'?ph+' · '+phaseName(tod):ph;
+  if(ph2!==lastPhase){ el('phase').textContent=ph2; lastPhase=ph2; }
   if(ck!==lastClock){ el('clock').textContent=ck; lastClock=ck; }
   paintInfo();
 }
@@ -4827,6 +5331,19 @@ function buildMapPick(){
   }
   const d=el('mapNote'); if(d) d.textContent=MAPS[mapType].blurb;
 }
+function buildHourPick(){
+  const box=el('hourPick'); if(!box) return;
+  box.innerHTML='';
+  for(const h of START_HOURS){
+    const b=document.createElement('button');
+    b.className=h.key===hourKey?'on':'';
+    b.innerHTML='<b>'+h.name+'</b>';
+    b.onclick=()=>{ hourKey=h.key; write('hour',h.key); buildHourPick(); };
+    box.appendChild(b);
+  }
+  const n=el('hourNote');
+  if(n) n.textContent=(START_HOURS.find(h=>h.key===hourKey)||START_HOURS[1]).blurb;
+}
 function buildDiffPick(){
   const box=el('diffPick'); box.innerHTML='';
   for(const k of Object.keys(DIFF)){
@@ -4838,12 +5355,13 @@ function buildDiffPick(){
   }
   const n=el('diffNote'); if(n) n.textContent=DIFF[diff].note;
 }
-buildDiffPick();
+buildDiffPick(); buildHourPick();
 buildMapPick(); buildCapPick();
 document.querySelectorAll('#startVeil [data-budget]').forEach(b=>b.onclick=()=>beginGame(+b.dataset.budget));
 el('shareEnd').onclick=shareGame;
 el('again').onclick=()=>{ el('endVeil').style.display='none'; el('startVeil').style.display='flex'; phase='start'; };
 loadProf();
+SAVES.prune(); refreshLoadButton();
 el('pname').value=prof.name;
 el('pname').oninput=()=>{ prof.name=(el('pname').value||'Commander').slice(0,18); saveProf(); };
 paintProf();
@@ -4897,6 +5415,11 @@ el('fsBtn').onclick=toggleFull;
 el('menuBtn').onclick=()=>paused?closeMenu():openMenu();
 el('mResume').onclick=closeMenu;
 el('mRestart').onclick=()=>{ closeMenu(); beginGame(budget); };
+el('mSave').onclick=()=>openSaves('save');
+el('mLoad').onclick=()=>openSaves('load');
+el('sLoad').onclick=()=>openSaves('load');
+el('saveNew').onclick=()=>doSave(null);
+el('saveClose').onclick=closeSaves;
 el('mNew').onclick=()=>{ closeMenu(); phase='start';
   el('endVeil').style.display='none'; el('startVeil').style.display='flex'; };
 el('selBtn').onclick=()=>{ selectMode=!selectMode;
@@ -4948,7 +5471,7 @@ if(window.visualViewport) window.visualViewport.addEventListener('resize',resize
 document.addEventListener('visibilitychange',()=>{
   // Backgrounded audio is a bug on a phone, not a feature: silence it even
   // outside a battle, when there is no pause menu to open.
-  if(document.hidden){ suspendAudio(); if(phase==='battle') openMenu(); }
+  if(document.hidden){ suspendAudio(); autosave(); if(phase==='battle') openMenu(); }
   else if(!paused) resumeAudio();
 });
 // small debug hook (harmless in normal play)
@@ -4957,6 +5480,16 @@ try{ window.__lvl=(t,n)=>{ lvl[t]=n; buildPalette(); };
      window.__works=()=>{ let tr=0,wi=0; for(let i=0;i<tGrid.length;i++){ if(tGrid[i]&TRENCHED) tr++; if(tGrid[i]&WIRED) wi++; }
        return {walls:walls.filter(w=>!w.dead&&!w.rubble).length,mines:mines.length,trenchCells:tr,wireCells:wi}; };
      window.__rank=(l)=>rankOf(l).name;
+     window.__squadlap=()=>{                     // formations sitting inside one another
+       const L=squads.filter(q=>!q.gone&&q.alive>0);
+       let pairs=0,worst=0;
+       for(let i=0;i<L.length;i++) for(let j=i+1;j<L.length;j++){
+         const a=L[i],b=L[j];
+         if(!!a.t.air!==!!b.t.air) continue;
+         const md=(a.fw+a.fd)*.25+(b.fw+b.fd)*.25;
+         const d=Math.hypot(a.fx-b.fx,a.fy-b.fy);
+         if(d<md*.55){ pairs++; const f=(md*.55-d)/(md*.55); if(f>worst) worst=f; } }
+       return {squads:L.length,pairs,worstFrac:+worst.toFixed(3)}; };
      window.__stuck=()=>{                        // bodies standing where they may not stand
        const out={live:0,inSolid:0,byKind:{}};
        for(const s of soldiers){ if(!s.alive||s.sq.t.air) continue; out.live++;
@@ -5021,6 +5554,12 @@ try{ window.__lvl=(t,n)=>{ lvl[t]=n; buildPalette(); };
      window.__cam=()=>({x:cam.x,y:cam.y,s:cam.s});
      window.__selMode=(v)=>{ selectMode=!!v; return selectMode; };
      window.__hash=()=>stateHash();
+     window.__rng=()=>seed();
+     window.__save=(id)=>SAVES.put(id||null,saveMeta(false),snapshot());
+     window.__load=(id)=>{ const r=SAVES.get(id); if(!r) return false; restoreBattle(r.state); return true; };
+     window.__saves=()=>SAVES.list().map(r=>r.id);
+     window.__dropSave=(id)=>{ SAVES.drop(id); return SAVES.list().length; };
+     window.__saveBytes=()=>JSON.stringify(snapshot()).length;
      window.__tick=(n)=>{ for(let i=0;i<n;i++) tick(SIM); return stateHash(); };
      window.__seed=(v)=>{ matchSeed=v; return matchSeed; };
      window.__prof=()=>prof;

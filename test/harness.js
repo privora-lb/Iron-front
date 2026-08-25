@@ -4,7 +4,7 @@
 //   node test/harness.js            full suite
 //   node test/harness.js --fast     shorter match runs, for a quick loop
 //
-// Five checks, in the order they catch things:
+// Seven checks, in the order they catch things:
 //   1. LOAD        index.html evaluates with no error - catches the load-time
 //                  crash that shows up in a browser as a black screen.
 //   2. MATCH       a match runs 1800+ frames on each of the five battlefields,
@@ -19,6 +19,13 @@
 //                  out around a road, civilians react to gunfire - and killing
 //                  every civilian leaves stateHash() untouched, which is what
 //                  keeps them free in lockstep.
+//   6. FEEL        what the game does in the hand: the camera punches and
+//                  settles, and a finger can select several units.
+//   7. SAVES       a battle saved in one process and loaded in another comes
+//                  back with the same stateHash() and runs on identically; the
+//                  slots hold; an unreadable record is refused, not half-loaded.
+const fs = require('fs');
+const os = require('os');
 const path = require('path');
 const { execFileSync } = require('child_process');
 const { loadGame } = require('./dom.js');
@@ -460,6 +467,139 @@ function battle(budget) {
   }
   if (problems.length) bad('a finger can select several units', problems.join(BR));
   else ok('a finger can select several units', 'quick drag pans, hold-drag and Select mode box-select');
+}
+
+/* ------------------------------------------------------------------ */
+/* 7. SAVES - a battle put down and picked up again                    */
+/* ------------------------------------------------------------------ */
+head('7. SAVES  (saved in one process, loaded in another)');
+const SAVERUN = path.join(__dirname, 'saverun.js');
+const SAVE_TICKS = FAST ? 300 : 900;
+const SAVE_MORE = FAST ? 300 : 600;
+
+function saverun(args) {
+  const out = execFileSync(process.execPath, [SAVERUN].concat(args),
+    { encoding: 'utf8', maxBuffer: 1 << 26 });
+  return JSON.parse(out.trim().split('\n').pop());
+}
+
+for (const map of FAST ? ['villages'] : MAPS) {
+  const file = path.join(os.tmpdir(), 'iron-front-save-' + map + '.json');
+  let wrote, read;
+  try {
+    wrote = saverun(['--seed', '4242', '--map', map, '--budget', '2000',
+      '--ticks', String(SAVE_TICKS), '--more', String(SAVE_MORE), '--out', file]);
+    read = saverun(['--load', file, '--more', String(SAVE_MORE)]);
+  } catch (e) {
+    bad(map + ': a saved battle comes back and carries on', (e.stdout || '') + (e.stderr || '') || e.message);
+    continue;
+  }
+  const problems = [];
+  if (!wrote.ok) problems.push('saving: ' + wrote.error);
+  if (!read.ok) problems.push('loading: ' + read.error);
+  if (wrote.ok && read.ok) {
+    if (wrote.at !== read.at) {
+      problems.push('the battle came back different: stateHash ' + wrote.at + ' saved, ' + read.at + ' loaded');
+    }
+    if (wrote.rngAt !== read.rngAt) problems.push('the RNG came back at ' + read.rngAt + ', not ' + wrote.rngAt);
+    if (wrote.after !== read.after) {
+      problems.push('after ' + SAVE_MORE + ' more ticks: ' + wrote.after + ' vs ' + read.after
+        + ' - the loaded battle took a different road');
+    }
+    if (read.fault) problems.push('draw fault after loading: ' + read.fault);
+  }
+  if (problems.length) bad(map + ': a saved battle comes back and carries on', problems.join(BR));
+  else ok(map + ': a saved battle comes back and carries on',
+    Math.round(wrote.bytes / 1024) + 'KB, exact at the save point and ' + SAVE_MORE + ' ticks later');
+  try { fs.unlinkSync(file); } catch { /* the temp file is not worth failing over */ }
+}
+
+// The slots themselves: eight manual saves, the autosave on top, and deleting
+// one gives the slot back.
+{
+  const g = loadGame({ quiet: true });
+  g.hook('seed')(11);
+  startMatch(g, 'villages', 300);
+  g.hook('tick')(60);
+  const results = [];
+  for (let i = 0; i < 9; i++) results.push(g.hook('save')(null).ok);
+  const filled = results.filter(Boolean).length;
+  const listed = g.hook('saves')().length;
+  const afterDrop = g.hook('dropSave')(g.hook('saves')()[0]);
+  const reused = g.hook('save')(null).ok;
+  const problems = [];
+  if (filled !== 8) problems.push('nine saves filled ' + filled + ' slots, expected 8');
+  if (results[8]) problems.push('the ninth save was accepted - the slot limit does not hold');
+  if (listed !== 8) problems.push('the list shows ' + listed + ' saves, expected 8');
+  if (afterDrop !== 7) problems.push('deleting one left ' + afterDrop + ' saves, expected 7');
+  if (!reused) problems.push('the freed slot could not be used again');
+  if (problems.length) bad('eight slots, and deleting one frees it', problems.join(BR));
+  else ok('eight slots, and deleting one frees it', '9 attempts, 8 kept');
+}
+
+// A record this build cannot read must be refused, and refusing must leave the
+// player somewhere sane rather than in a half-loaded battle.
+{
+  const g = loadGame({ quiet: true });
+  g.hook('seed')(12);
+  startMatch(g, 'villages', 300);
+  g.hook('tick')(60);
+  const problems = [];
+  g.win.localStorage.setItem('ironfront:save:alien',
+    JSON.stringify({ v: 99, id: 'alien', at: 1, meta: { map: 'Nowhere' }, state: { v: 99 } }));
+  g.win.localStorage.setItem('ironfront:saves', JSON.stringify([{ id: 'alien', at: 1, meta: { map: 'Nowhere' } }]));
+  let threw = null;
+  let taken = null;
+  try { taken = g.hook('load')('alien'); } catch (e) { threw = e; }
+  if (threw) problems.push('loading a foreign record threw: ' + threw.message);
+  if (taken) problems.push('a record from another build was accepted');
+  // and the same through the screen the player actually uses
+  g.el('mLoad').click();
+  g.win.localStorage.setItem('ironfront:save:broken',
+    JSON.stringify({ v: 1, id: 'broken', at: 2, meta: { map: 'Nowhere' }, state: { v: 1, map: 'nowhere', squads: [], tg: [] } }));
+  g.win.localStorage.setItem('ironfront:saves', JSON.stringify([{ id: 'broken', at: 2, meta: { map: 'Nowhere' } }]));
+  g.el('mLoad').click();
+  const row = g.all('#saveList .slot button')[0];
+  try { if (row) row.click(); } catch (e) { problems.push('a broken save threw on load: ' + e.message); }
+  g.frames(3);
+  if (g.fault()) problems.push('draw fault after a refused load: ' + g.fault());
+  if (g.el('startVeil').style.display !== 'flex') {
+    problems.push('a refused load left the player nowhere: startVeil is ' + g.el('startVeil').style.display);
+  }
+  if (problems.length) bad('an unreadable save is refused, not half-loaded', problems.join(BR));
+  else ok('an unreadable save is refused, not half-loaded', 'foreign version and broken record both turned away');
+}
+
+// The whole round trip through the buttons a player actually presses.
+{
+  const g = loadGame({ quiet: true });
+  g.hook('seed')(13);
+  startMatch(g, 'city', 2000);
+  g.hook('tick')(600);
+  const before = g.hook('hash')();
+  const problems = [];
+  g.el('menuBtn').click();                      // pause
+  g.el('mSave').click();                        // -> the save screen
+  g.el('saveNew').click();                      // -> a new slot
+  if (!g.all('#saveList .slot').length) problems.push('the save screen lists nothing after saving');
+  g.el('saveClose').click();
+  g.el('mResume').click();
+  g.hook('tick')(300);                          // fight on, so the load has to undo something
+  if (g.hook('hash')() === before) problems.push('the battle did not move on after saving');
+  g.el('menuBtn').click();
+  g.el('mLoad').click();
+  const row = g.all('#saveList .slot button')[0];
+  if (!row) problems.push('nothing to load');
+  else row.click();
+  // read the hash before any frame runs: a frame would tick the battle on
+  const restored = g.hook('hash')();
+  g.frames(3);
+  if (restored !== before) problems.push('loading did not put the battle back where it was');
+  if (g.el('saveVeil').style.display !== 'none') problems.push('the save screen stayed open after loading');
+  if (g.el('menuVeil').style.display !== 'none') problems.push('the game came back paused');
+  if (g.fault()) problems.push('draw fault after loading: ' + g.fault());
+  if (problems.length) bad('save and load through the menu', problems.join(BR));
+  else ok('save and load through the menu', 'paused, saved, fought on, loaded back to the same state');
 }
 
 /* ------------------------------------------------------------------ */
