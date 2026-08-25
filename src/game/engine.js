@@ -13,6 +13,8 @@ import { NATION, ROMAN } from '../data/nations.js';
 import { MAPS } from '../data/maps.js';
 import { MAXLVL, RANKS, rankOf, nextRank, xpNeed } from '../data/ranks.js';
 import { DIFF } from '../data/difficulty.js';
+import { makeLanduse } from '../world/landuse.js';
+import { paintLanduse } from '../world/paintLanduse.js';
 import { DAY_LEN, START_HOURS, todAt, sunElev, sunDir, lightAt, isNight,
          ambientAt, phaseName } from '../data/daynight.js';
 import { srand, R, rnd, vr, seed } from '../core/rng.js';
@@ -221,6 +223,7 @@ let stats={blue:0,red:0};
 let hot={stage:'orders',team:'blue',t:45,round:1};
 let cam={s:1,x:0,y:0};
 let ground=null,canopy=null,canopyCtx=null,decal=null,decalCtx=null;
+let landuse=null;                       // the field patchwork, see src/world/landuse.js
 let mini={x:0,y:0,w:0,h:0,s:1,cx:90,cy:90,r:80};
 let quality=1,qualityLock=false,frameMs=16,clock=0;
 { // an explicit graphics choice sticks; one taken automatically after a
@@ -1286,6 +1289,14 @@ function bakeTerrain(){
   g.fillStyle=grd; g.fillRect(0,0,W,H);
   g.imageSmoothingEnabled=true;                 // real light on real slopes
   g.drawImage(reliefLayer(),0,0,W,H);
+  // The worked countryside: a patchwork of plots with hedges and ploughing,
+  // laid down before anything is stamped on it so woods, villages and water
+  // sit ON the land rather than beside it. Skipped where farming would be
+  // absurd - nobody ploughs a city block or a dune field.
+  if(mapType!=='city'&&mapType!=='desert'&&mapType!=='beach'){
+    landuse=makeLanduse(matchSeed,W,H,{minSide:mapType==='mountains'?420:300});
+    paintLanduse(g,landuse,MAPS[mapType].pal[0],{alpha:mapType==='mountains'?.34:.5});
+  } else landuse=null;
   if(mapType==='city'){                                   // wide avenues through the core
     const x0=W*.34,x1=W*.66,y0=laneY[1]-620,y1=laneY[1]+620;
     g.strokeStyle='rgba(30,30,28,.38)'; g.lineWidth=46;
@@ -5681,6 +5692,13 @@ try{ window.__lvl=(t,n)=>{ lvl[t]=n; buildPalette(); };
      window.__works=()=>{ let tr=0,wi=0; for(let i=0;i<tGrid.length;i++){ if(tGrid[i]&TRENCHED) tr++; if(tGrid[i]&WIRED) wi++; }
        return {walls:walls.filter(w=>!w.dead&&!w.rubble).length,mines:mines.length,trenchCells:tr,wireCells:wi}; };
      window.__rank=(l)=>rankOf(l).name;
+     window.__landuse=()=>{
+       if(!landuse) return {parcels:0};
+       const by={};
+       for(const p of landuse.parcels) by[p.use]=(by[p.use]||0)+1;
+       const e={};
+       for(const p of landuse.parcels) e[p.edge]=(e[p.edge]||0)+1;
+       return {parcels:landuse.parcels.length,uses:by,edges:e}; };
      window.__stuckSq=()=>{                      // formation ANCHORS sitting in solid ground
        let n=0; const by={};
        for(const q of squads){ if(q.gone||q.alive<=0||q.t.air) continue;
