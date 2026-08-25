@@ -1,0 +1,29 @@
+/* Iron Front — notch, cutout and gesture-bar clearance on phones.
+   The shell also writes --inset-* on <html>; env() wins where it is supported. */
+:root {
+  --inset-top: env(safe-area-inset-top, 0px);
+  --inset-right: env(safe-area-inset-right, 0px);
+  --inset-bottom: env(safe-area-inset-bottom, 0px);
+  --inset-left: env(safe-area-inset-left, 0px);
+}
+#hud {
+  padding-top: var(--inset-top);
+}
+#top {
+  padding-left: calc(8px + var(--inset-left));
+  padding-right: calc(8px + var(--inset-right));
+}
+#deck {
+  padding-left: calc(6px + var(--inset-left));
+  padding-right: calc(6px + var(--inset-right));
+}
+#zoom {
+  right: calc(7px + var(--inset-right));
+  bottom: calc(7px + var(--inset-bottom));
+}
+#toast {
+  top: calc(10px + var(--inset-top));
+}
+.panel {
+  margin: var(--inset-top) var(--inset-right) var(--inset-bottom) var(--inset-left);
+}

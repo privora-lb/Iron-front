@@ -1,0 +1,58 @@
+name: Android
+
+# The native project is generated rather than committed, so this workflow
+# recreates it from capacitor.config.json every run. See docs/MOBILE.md.
+on:
+  workflow_dispatch:
+    inputs:
+      variant:
+        description: Build variant
+        type: choice
+        options: [debug, release]
+        default: debug
+  push:
+    tags: ['v*']
+
+jobs:
+  apk:
+    name: Build APK
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version-file: .nvmrc
+          cache: npm
+
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+
+      - uses: android-actions/setup-android@v3
+
+      - name: Install
+        run: npm ci
+
+      - name: Web build
+        run: npm run build
+
+      - name: Generate the Android project
+        run: npx cap add android
+
+      - name: Sync
+        run: npx cap sync android
+
+      - name: Assemble
+        working-directory: android
+        run: |
+          chmod +x gradlew
+          ./gradlew assemble${{ inputs.variant == 'release' && 'Release' || 'Debug' }} --no-daemon
+
+      - name: Upload
+        uses: actions/upload-artifact@v4
+        with:
+          name: iron-front-apk
+          path: android/app/build/outputs/apk/**/*.apk
+          retention-days: 30

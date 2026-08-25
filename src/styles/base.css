@@ -1,0 +1,52 @@
+/* Iron Front — design tokens, document base, canvas stage */
+:root {
+  --ink: #14130f;
+  --stone-2: #2e2b23;
+  --parch: #e6d8b8;
+  --parch-dim: #a99b7c;
+  --gold: #c9a227;
+  --blue: #4c7fbf;
+  --blue-lt: #9fc4f0;
+  --red: #be3b2e;
+  --red-lt: #f0998c;
+  --line: rgba(201, 162, 39, 0.28);
+}
+* {
+  box-sizing: border-box;
+  -webkit-tap-highlight-color: transparent;
+}
+html,
+body {
+  margin: 0;
+  height: 100%;
+  overflow: hidden;
+  background: var(--ink);
+  color: var(--parch);
+  font-family: 'Barlow Condensed', system-ui, sans-serif;
+  font-size: 16px;
+  user-select: none;
+}
+#wrap {
+  position: fixed;
+  inset: 0;
+  overflow: hidden;
+}
+canvas {
+  display: block;
+  touch-action: none;
+  cursor: crosshair;
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+}
+#stage {
+  position: absolute;
+  inset: 0;
+  background: #191811;
+}
+@media (prefers-reduced-motion: reduce) {
+  * {
+    transition: none !important;
+  }
+}

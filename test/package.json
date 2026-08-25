@@ -1,0 +1,4 @@
+{
+  "//": "The harness is CommonJS; the app package is ESM. This pins the scope.",
+  "type": "commonjs"
+}

@@ -1,0 +1,13 @@
+{
+  "editor.formatOnSave": true,
+  "editor.defaultFormatter": "esbenp.prettier-vscode",
+  "eslint.useFlatConfig": true,
+  "files.eol": "\n",
+  "search.exclude": {
+    "dist": true,
+    "dist-test": true,
+    "android": true,
+    "ios": true,
+    "node_modules": true
+  }
+}

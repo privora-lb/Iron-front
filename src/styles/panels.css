@@ -1,0 +1,183 @@
+/* Iron Front — full-screen veils, panels, option grids */
+.veil {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: radial-gradient(ellipse at center, rgba(20, 19, 15, 0.9), rgba(10, 9, 7, 0.97));
+  z-index: 5;
+  padding: 12px;
+  overflow: auto;
+}
+.panel {
+  width: min(430px, 100%);
+  border: 1px solid var(--line);
+  background: linear-gradient(180deg, #262218, #16140f);
+  padding: 12px 12px 14px;
+  text-align: center;
+  box-shadow: 0 14px 50px rgba(0, 0, 0, 0.7);
+}
+h1 {
+  font-family: 'Cinzel', serif;
+  font-weight: 700;
+  font-size: 19px;
+  margin: 0;
+  letter-spacing: 0.08em;
+  color: #f0e3c2;
+}
+h1 small {
+  display: block;
+  font-family: 'Barlow Condensed', sans-serif;
+  font-size: 10.5px;
+  letter-spacing: 0.2em;
+  color: var(--gold);
+  margin-top: 3px;
+  font-weight: 400;
+}
+#theatre {
+  width: 100%;
+  height: 74px;
+  display: block;
+  border: 1px solid var(--line);
+  margin-top: 8px;
+  background: #1a1913;
+}
+.brief {
+  font-size: 12px;
+  color: var(--parch-dim);
+  margin: 7px 2px 0;
+  line-height: 1.35;
+}
+.rule {
+  height: 1px;
+  background: linear-gradient(90deg, transparent, var(--gold), transparent);
+  margin: 8px 0;
+}
+.panel p {
+  font-size: 12.5px;
+  color: var(--parch-dim);
+  line-height: 1.35;
+  margin: 5px 0;
+}
+.lbl {
+  color: var(--gold);
+  font-family: 'Cinzel', serif;
+  font-size: 10px;
+  letter-spacing: 0.1em;
+  margin: 8px 0 4px;
+}
+.opts {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 4px;
+}
+.opts.three {
+  grid-template-columns: 1fr 1fr 1fr;
+}
+.opts.five {
+  grid-template-columns: repeat(5, 1fr);
+  gap: 3px;
+}
+.opts.five button {
+  padding: 5px 2px;
+}
+.opts.five button b {
+  font-size: 9.5px;
+  line-height: 1.1;
+}
+#pname {
+  width: 100%;
+  padding: 6px 8px;
+  background: #151410;
+  color: var(--parch);
+  border: 1px solid var(--line);
+  border-radius: 2px;
+  font-family: 'Cinzel', serif;
+  font-size: 13px;
+  letter-spacing: 0.06em;
+  text-align: center;
+  outline: none;
+}
+#pname:focus {
+  border-color: var(--gold);
+}
+.profstats {
+  font-size: 10.5px;
+  color: var(--parch-dim);
+  margin: 5px 2px 0;
+}
+.profstats b {
+  color: var(--gold);
+  font-weight: 500;
+}
+.mapnote {
+  font-size: 11px;
+  color: var(--parch-dim);
+  margin: 4px 2px 0;
+  min-height: 14px;
+}
+.opts button {
+  padding: 6px 5px;
+  text-align: center;
+  width: 100%;
+  text-transform: none;
+  line-height: 1.15;
+}
+.opts button b {
+  display: block;
+  font-family: 'Cinzel', serif;
+  font-size: 11px;
+}
+.opts button span {
+  font-size: 9.5px;
+  color: var(--parch-dim);
+  display: block;
+  line-height: 1.15;
+}
+.big {
+  width: 100%;
+  padding: 8px;
+  font-size: 13px;
+  font-family: 'Cinzel', serif;
+  letter-spacing: 0.08em;
+  margin-top: 6px;
+}
+.stats {
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+  gap: 6px;
+  margin: 9px 0;
+  font-size: 10.5px;
+}
+.stats div b {
+  display: block;
+  font-size: 17px;
+  font-family: 'Cinzel', serif;
+  color: #f0e3c2;
+}
+.win {
+  color: var(--blue-lt);
+}
+.lose {
+  color: var(--red-lt);
+}
+.key {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 2px 8px;
+  font-size: 10.5px;
+  color: var(--parch-dim);
+  text-align: left;
+  margin-top: 7px;
+}
+.key i {
+  font-style: normal;
+  color: var(--parch);
+}
+#passVeil h1.bluec {
+  color: var(--blue-lt);
+}
+#passVeil h1.redc {
+  color: var(--red-lt);
+}
