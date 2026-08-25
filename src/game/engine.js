@@ -1636,7 +1636,7 @@ function makeSquad(team,type,x,y,count){
   const t=UNITS[type],n=count||unitCount(type);
   const sq={id:nextId++,team,type,t,fx:x,fy:y,facing:team==='blue'?0:Math.PI,
     formation:'line',order:{kind:'hold'},initial:n,alive:n,legion:0,cost:unitCost(type),
-    routed:false,moraleT:rnd(0,1),disengage:0,crossT:0,crossing:false,crossWide:false,seen:false,seenT:0,soldiers:[],gone:false,fw:0,fd:0,flag:rnd(0,6.28),slide:0};
+    routed:false,moraleT:rnd(0,1),disengage:0,queue:[],crossT:0,crossing:false,crossWide:false,seen:false,seenT:0,soldiers:[],gone:false,fw:0,fd:0,flag:rnd(0,6.28),slide:0};
   // A formation is anchored on open ground, but its slots fan out from there and
   // can land inside a house, a bunker or a cliff. For a vehicle or a gun that is
   // a permanent trap, so every slot is nudged clear as it is filled.
@@ -1968,8 +1968,25 @@ function order(sq,o,breakOff){
   if(sq.routed||sq.gone) return;
   sq.order=o; sq.disengage=breakOff?3.0:0;
 }
-function issue(list,kind,x,y,tsq){
+// Where new units are sent as they roll out, per side. Null means 'to the spot
+// you tapped', which is what it did before.
+let rally={blue:null,red:null};
+let queueing=false;                                // next order joins the queue
+let rallySet=false;                                // next tap places the rally point
+
+// Orders can be QUEUED rather than replacing what a unit is already doing, so a
+// move can be planned as a route round a wood instead of a straight line
+// through it. shift-click on a mouse, the Queue button on a finger.
+function issue(list,kind,x,y,tsq,append){
   for(const sq of list){
+    if(append&&(kind==='move'||kind==='attack'||kind==='charge')){
+      if(sq.routed||sq.gone) continue;
+      if(!sq.queue) sq.queue=[];
+      if(sq.queue.length<8)
+        sq.queue.push(kind==='move'?{kind:'move',x,y}:{kind,sq:tsq});
+      continue;
+    }
+    if(sq.queue) sq.queue.length=0;
     if(kind==='move')        order(sq,{kind:'move',x,y},true);
     else if(kind==='attack') order(sq,{kind:'attack',sq:tsq},false);
     else if(kind==='charge') order(sq,{kind:'charge',sq:tsq||nearestEnemySquad(sq)},false);
@@ -2026,6 +2043,16 @@ function stepClock(dt){
   dayLight=lightAt(tod);
   night=isNight(tod);
 }
+// Step to whatever was queued behind the order just finished.
+function nextOrder(sq){
+  if(sq.queue&&sq.queue.length){
+    const n=sq.queue.shift();
+    if(n.kind!=='move'&&(!n.sq||n.sq.gone)) return nextOrder(sq);   // his target died
+    order(sq,n,n.kind==='move');
+    return;
+  }
+  sq.order={kind:'hold'};
+}
 function stepSquad(sq,dt){
   if(sq.gone) return;
   let n=0; for(let i=0;i<sq.soldiers.length;i++) if(sq.soldiers[i].alive) n++;
@@ -2063,7 +2090,7 @@ function stepSquad(sq,dt){
   } else {
     const o=sq.order;
     if(o.kind==='move'){ tx=o.x; ty=o.y;
-      if((o.x-sq.fx)**2+(o.y-sq.fy)**2<64) sq.order={kind:'hold'}; }
+      if((o.x-sq.fx)**2+(o.y-sq.fy)**2<64) nextOrder(sq); }
     else if(o.kind==='build'){
       tx=o.x; ty=o.y;
       if((o.x-sq.fx)**2+(o.y-sq.fy)**2<2600){       // on site: down tools and dig
@@ -2841,7 +2868,8 @@ function place(team,x,y){
   else {
     const p=hqSpawn(team,x,y);                       // rolls out of the nearest base you hold
     const sq=makeSquad(team,placing,p.x,p.y);
-    order(sq,{kind:'move',x,y},true);
+    const r=rally[team];                             // gather where you told them to
+    order(sq,{kind:'move',x:r?r.x:x,y:r?r.y:y},true);
     pings.push({x,y,t:.9});
   }
   spent[team]+=cost; paintPoints(); tap(); sfx('deploy');
@@ -4523,6 +4551,68 @@ function draw(){
     }
   }
 
+  // What the selected units have been told to do, drawn on the ground: a line
+  // from each unit through every waypoint it is holding, a flag at each, and the
+  // rally point if one is planted. Orders you cannot see are orders you cannot
+  // trust, and a queue you cannot see is not worth having.
+  if(phase==='battle'&&selected.length){
+    const team=viewTeam(),c=COL[team];
+    ctx.lineCap='round'; ctx.lineJoin='round';
+    for(const sq of selected){
+      if(sq.gone||sq.alive<=0) continue;
+      const legs=[];
+      const o=sq.order;
+      if(o.kind==='move') legs.push({x:o.x,y:o.y,fight:false});
+      else if((o.kind==='attack'||o.kind==='charge')&&o.sq&&!o.sq.gone)
+        legs.push({x:o.sq.fx,y:o.sq.fy,fight:true});
+      for(const q of sq.queue||[]){
+        if(q.kind==='move') legs.push({x:q.x,y:q.y,fight:false});
+        else if(q.sq&&!q.sq.gone) legs.push({x:q.sq.fx,y:q.sq.fy,fight:true});
+      }
+      if(!legs.length) continue;
+      ctx.strokeStyle=c.lt; ctx.globalAlpha=.5;
+      ctx.lineWidth=2/cam.s; ctx.setLineDash([10/cam.s,9/cam.s]);
+      ctx.beginPath(); ctx.moveTo(sq.fx,sq.fy);
+      for(const l of legs) ctx.lineTo(l.x,l.y);
+      ctx.stroke(); ctx.setLineDash([]);
+      ctx.globalAlpha=1;
+      const R0=7/cam.s;
+      legs.forEach((l,i)=>{
+        ctx.fillStyle=l.fight?'rgba(226,120,104,.9)':c.lt;
+        if(l.fight){                                 // a cross where you told them to fight
+          ctx.lineWidth=2.6/cam.s; ctx.strokeStyle='rgba(226,120,104,.9)';
+          ctx.beginPath();
+          ctx.moveTo(l.x-R0,l.y-R0); ctx.lineTo(l.x+R0,l.y+R0);
+          ctx.moveTo(l.x+R0,l.y-R0); ctx.lineTo(l.x-R0,l.y+R0);
+          ctx.stroke();
+        } else {                                     // a numbered stop for each leg
+          ctx.beginPath(); ctx.arc(l.x,l.y,R0,0,6.28); ctx.fill();
+          ctx.fillStyle='rgba(16,18,14,.85)';
+          ctx.beginPath(); ctx.arc(l.x,l.y,R0*.55,0,6.28); ctx.fill();
+        }
+        if(i===legs.length-1&&legs.length>1){        // how many stops are planned
+          ctx.fillStyle=c.lt;
+          ctx.font='600 '+(13/cam.s)+'px "Barlow Condensed", sans-serif';
+          ctx.textAlign='center';
+          ctx.fillText(String(legs.length),l.x,l.y-R0*1.9);
+          ctx.textAlign='left';
+        }
+      });
+    }
+    const rp=rally[team];
+    if(rp){                                          // the rally flag
+      ctx.strokeStyle=c.lt; ctx.lineWidth=2.4/cam.s;
+      ctx.beginPath(); ctx.moveTo(rp.x,rp.y); ctx.lineTo(rp.x,rp.y-26/cam.s); ctx.stroke();
+      ctx.fillStyle=c.lt;
+      ctx.beginPath();
+      ctx.moveTo(rp.x,rp.y-26/cam.s);
+      ctx.lineTo(rp.x+17/cam.s,rp.y-20/cam.s);
+      ctx.lineTo(rp.x,rp.y-14/cam.s);
+      ctx.closePath(); ctx.fill();
+    }
+    ctx.lineCap='butt'; ctx.lineJoin='miter';
+  }
+
   ctx.setTransform(dpr,0,0,dpr,0,0);
 
   // The light of the hour, laid over the finished ground and everything standing
@@ -5145,6 +5235,7 @@ function pickSquad(wx,wy,team){
 }
 function onDown(e){
   unlockAudio();
+  ptr.shift=!!e.shiftKey;
   if(phase==='start'||phase==='over'||paused) return;
   if(e.touches&&e.touches.length===2){
     const a=e.touches[0],b=e.touches[1];
@@ -5266,6 +5357,12 @@ function onUp(){
     return;
   }
   if(phase==='battle'){
+    if(rallySet){                                  // planting the rally flag
+      rally[team]={x:w.x,y:w.y};
+      rallySet=false; el('rBtn').classList.remove('on');
+      pings.push({x:w.x,y:w.y,t:1.2});
+      toast('Rally point set - reinforcements will form up here'); return;
+    }
     // Tapping one of your own units always means "select this one", even with a
     // card held: buying is what you do with empty ground, and it drops the card
     // rather than dropping a squad on top of the men already standing there.
@@ -5296,12 +5393,14 @@ function onUp(){
     }
     if(!selected.length){ toast('Select a unit first'); return; }
     const foe=pickSquad(w.x,w.y,other(team));
-    if(foe){ issue(selected,'attack',0,0,foe); toast('Orders: engage the '+foe.t.name); }
+    const add=queueing||ptr.shift;                 // add to the plan, or replace it
+    if(foe){ issue(selected,'attack',0,0,foe,add); toast((add?'Added: ':'Orders: ')+'engage the '+foe.t.name); }
     else {
       const ec=enemyCastle(team);
       if(ec&&!ec.dead&&castleDist(ec,w.x,w.y)<30){
         issue(selected,'castle'); toast('Orders: assault the HQ');
-      } else { issue(selected,'move',w.x,w.y); toast('Orders: advance'); }
+      } else { issue(selected,'move',w.x,w.y,null,add);
+        toast(add?'Added to the plan':'Orders: advance'); }
     }
   }
 }
@@ -5528,6 +5627,12 @@ el('mHaptics').onclick=()=>{ prof.haptics=!prof.haptics; saveProf();
 el('mQuality').onclick=()=>{ qualityLock=true; quality=quality?0:1;
   write('gfx',quality?'high':'fast');
   el('mQuality').textContent='Graphics: '+(quality?'high':'fast'); };
+el('qBtn').onclick=()=>{ queueing=!queueing;
+  el('qBtn').classList.toggle('on',queueing);
+  toast(queueing?'Queue: orders add to the plan':'Queue off'); };
+el('rBtn').onclick=()=>{ rallySet=!rallySet;
+  el('rBtn').classList.toggle('on',rallySet);
+  toast(rallySet?'Tap the ground to set the rally point':'Rally off'); };
 el('mSound').onclick=()=>{ unlockAudio(); toggleMuted();
   el('mSound').textContent='Sound: '+(isMuted()?'off':'on'); };
 document.querySelectorAll('.spd button').forEach(b=>{
