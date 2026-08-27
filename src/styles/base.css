@@ -50,3 +50,14 @@ canvas {
     transition: none !important;
   }
 }
+
+/* The battlefield is drawn by one of two renderers. #cv is the top-down canvas
+   renderer; #gl is the 3D one, with #ov carrying the minimap and the markers
+   over it, since a canvas can hold a 2D context or a WebGL one but not both. */
+#gl {
+  z-index: 1;
+}
+#ov {
+  z-index: 2;
+  background: transparent;
+}

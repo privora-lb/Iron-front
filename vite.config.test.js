@@ -1,9 +1,17 @@
+import { fileURLToPath } from 'node:url';
 import { defineConfig } from 'vite';
 
 // Bundles the game into one self-executing script for the headless harness in
 // test/. Kept separate from vite.config.js so the shipped web build is never
 // shaped by a testing constraint.
 export default defineConfig({
+  resolve: {
+    alias: {
+      // The harness has no WebGL, so the 3D renderer can never run there. Swap
+      // it for a stub rather than bundle three.js into every test run.
+      '../render/three/scene.js': fileURLToPath(new URL('./test/no-three.mjs', import.meta.url)),
+    },
+  },
   // Harness builds are never shipped, so they say so rather than carrying a SHA.
   define: { __BUILD__: JSON.stringify('harness') },
   build: {

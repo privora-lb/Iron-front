@@ -3,7 +3,7 @@
 There is one test command and it is not a unit-test runner:
 
 ```bash
-npm test          # build the headless bundle, then run all 44 checks
+npm test          # build the headless bundle, then run all 51 checks
 npm run test:fast # shorter match runs, for a tight loop
 npm run test:sim  # one determinism probe, prints hashes as JSON
 npm run test:crowd # how many bodies are standing inside each other
@@ -23,7 +23,7 @@ the harness can no longer read the code straight out of `index.html`. It loads
 The body markup still comes from the real `index.html`, so the HUD the tests
 click on is the HUD that ships.
 
-## The eight checks
+## The nine checks
 
 1. **LOAD** — the bundle evaluates with no error, the debug hooks are installed,
    the palette is built, and 30 idle frames run on the start screen. This is the
@@ -48,6 +48,21 @@ click on is the HUD that ships.
    behind. The rest of the section checks a real battle reads the same model —
    roads carry armour, a collapsed house leaves rubble armour must go round,
    and the info line says what the simulation is using.
+9. **RENDERERS** — the same battle can be drawn two ways. The 3D ground is
+   laid over the battlefield the right way round, a device with no WebGL is
+   refused the 3D view and keeps playing, and both renderers read one world
+   rather than a copy each.
+
+## Testing a renderer with no screen
+
+The harness has no WebGL, so the 3D renderer can never start there — and
+`vite.config.test.js` aliases it to `test/no-three.mjs` so three.js is not
+bundled into every test run. What can still be tested is the geometry: three
+builds meshes perfectly well in Node, it only needs a browser to draw them.
+`test/terrain3drun.mjs` imports the ground builder directly and proves the
+mesh lies over the battlefield the right way round — the failure that would
+otherwise look like "the terrain is a bit odd" in a screenshot, while every
+unit stood in the wrong place on it and picking was wrong everywhere.
 
 ## Why saves are driven by tick count too
 

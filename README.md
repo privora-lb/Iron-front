@@ -30,6 +30,9 @@ larger formations and a bigger command as you climb.
 - **Total War** removes every limit
 - **Save and load:** eight slots plus an autosave when the game is
   backgrounded, from the pause menu or the start screen
+- **Fought in 3D:** real ground, shadows that follow the hour, tank turrets
+  that traverse. The top-down map is still there in the pause menu, and a
+  device that cannot run WebGL is given it without being asked
 
 Controls: tap a unit card then the ground to deploy · tap markers to select ·
 tap ground to move · tap an enemy to engage · number keys 1–9 for groups ·
@@ -43,7 +46,7 @@ minimap to jump.
 | `npm run dev`     | Dev server, reachable from a phone on the same network  |
 | `npm run build`   | Production build into `dist/`                           |
 | `npm run preview` | Serve the production build                              |
-| `npm test`        | The headless harness — 44 checks, including determinism |
+| `npm test`        | The headless harness — 51 checks, including determinism |
 | `npm run check`   | Lint, test and build, as CI runs them                   |
 | `npm run icons`   | Regenerate every icon size from the procedural emblem   |
 | `npm run android` | Build, sync and open Android Studio                     |
@@ -59,7 +62,10 @@ src/
   data/               balance and content as plain values — units, maps, ranks, ground
   world/              the battlefield as data — terrain model, land use
   core/               seeded rng, math, dom, polyfills
-  game/engine.js      simulation, renderer, HUD, input (being split up)
+  game/engine.js      simulation, HUD, input, the top-down renderer
+  render/three/       the 3D battlefield — loaded only when it is switched on
+  world/              the battlefield as data and as generation: the terrain
+                      model, where water runs, where roads go, what grows
   platform/           Capacitor bridge, storage, saved battles, service worker
   audio/sound.js      synthesised sound effects — no sample files
   styles/             tokens, HUD, panels, overlays, safe-area, fonts

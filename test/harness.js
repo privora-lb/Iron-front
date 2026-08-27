@@ -4,7 +4,7 @@
 //   node test/harness.js            full suite
 //   node test/harness.js --fast     shorter match runs, for a quick loop
 //
-// Eight checks, in the order they catch things:
+// Nine checks, in the order they catch things:
 //   1. LOAD        index.html evaluates with no error - catches the load-time
 //                  crash that shows up in a browser as a black screen.
 //   2. MATCH       a match runs 1800+ frames on each of the five battlefields,
@@ -28,6 +28,10 @@
 //                  cross it, what it takes off a shell, whether it hides you
 //                  and whether you can see through it - and the info line and
 //                  the simulation read the same answer.
+//   9. RENDERERS   the same battle can be drawn two ways: the 3D ground is
+//                  laid over the battlefield correctly, a device with no
+//                  WebGL is refused and keeps playing, and both renderers
+//                  read one world rather than a copy each.
 const fs = require('fs');
 const os = require('os');
 const path = require('path');
@@ -611,6 +615,24 @@ for (const map of FAST ? ['villages'] : MAPS) {
 /* ------------------------------------------------------------------ */
 head('8. TERRAIN');
 
+// Generation in an order: height, then the water that runs off it, then the
+// roads that avoid the steep ground, then the wood that grows where the water
+// went. Each one a consequence of the last, which is the thing that can be
+// checked - unlike whether it looks nice.
+{
+  let out = null;
+  try {
+    out = JSON.parse(execFileSync(process.execPath, [path.join(__dirname, 'mapgenrun.mjs')],
+      { encoding: 'utf8' }).trim().split(BR).pop());
+  } catch (e) {
+    bad('the map is generated in an order, not decorated', (e.stdout || '') + (e.stderr || '') || e.message);
+  }
+  if (out) {
+    if (out.ok) ok('the map is generated in an order, not decorated', out.checks + ' assertions on ground with a right answer');
+    else bad('the map is generated in an order, not decorated', out.fails.join(BR));
+  }
+}
+
 // The model itself, on ground built by hand, in its own process. It imports
 // src/world/terrain.js directly - no DOM, no engine - which is only possible
 // because the model has no idea any of that exists.
@@ -729,6 +751,137 @@ function ground(map) {
   if (!g.hook('los')(80, 60, 400, 60, 0)) problems.push('open ground near the corner blocked a sight line');
   if (problems.length) bad('sight lines are cast against the real ground', problems.join(BR));
   else ok('sight lines are cast against the real ground');
+}
+
+/* ------------------------------------------------------------------ */
+/* 9. RENDERERS - two ways of drawing the same battle                  */
+/* ------------------------------------------------------------------ */
+head('9. RENDERERS');
+
+// The 3D ground, in its own process. three.js builds geometry in node happily —
+// it only needs a browser to draw — so the thing most likely to be silently
+// wrong, whether the mesh lies over the battlefield the right way round, can be
+// proved here rather than squinted at in a screenshot.
+{
+  let out = null;
+  try {
+    out = JSON.parse(execFileSync(process.execPath, [path.join(__dirname, 'terrain3drun.mjs')],
+      { encoding: 'utf8' }).trim().split('\n').pop());
+  } catch (e) {
+    bad('the 3D ground is laid over the battlefield correctly', (e.stdout || '') + (e.stderr || '') || e.message);
+  }
+  if (out) {
+    if (out.ok) ok('the 3D ground is laid over the battlefield correctly', out.checks + ' assertions, no screen needed');
+    else bad('the 3D ground is laid over the battlefield correctly', out.fails.join(BR));
+  }
+}
+
+// A device with no WebGL must be told so and left playing, not left staring at
+// a blank canvas. The harness is exactly such a device.
+{
+  const g = loadGame({ quiet: true });
+  g.hook('seed')(7);
+  startMatch(g, 'villages', 2000);
+  g.frames(30);
+  const problems = [];
+  const btn = g.el('mView');
+  if (!btn) problems.push('no view toggle in the pause menu');
+  else {
+    if (!/top-down/i.test(btn.textContent)) problems.push('the toggle does not start on the top-down view: ' + btn.textContent);
+    btn.click();
+    g.frames(6);
+    if (g.fault()) problems.push('switching to 3D without WebGL threw: ' + g.fault());
+    if (g.el('cv').style.display === 'none') problems.push('the 2D battlefield was hidden with nothing to replace it');
+    if (g.el('gl').style.display === 'block') problems.push('the 3D canvas was shown on a device that cannot draw it');
+    // and the game must still be running
+    const before = g.hook('hash')();
+    g.hook('tick')(120);
+    if (g.hook('hash')() === before) problems.push('the battle stopped after the refused switch');
+  }
+  if (problems.length) bad('a device without WebGL is refused the 3D view and keeps playing', problems.join(BR));
+  else ok('a device without WebGL is refused the 3D view and keeps playing');
+}
+
+// The two renderers must be reading one world, not two. Nothing the 3D view is
+// handed may be a copy, or it would go stale the moment the battle moved.
+{
+  const g = loadGame({ quiet: true });
+  g.hook('seed')(9);
+  startMatch(g, 'city', 2000);
+  g.hook('tick')(300);
+  const problems = [];
+  const v = g.hook('worldview') ? g.hook('worldview')() : null;
+  if (!v) problems.push('no world view to hand a renderer');
+  else {
+    if (v.terrain !== g.hook('terrain')()) problems.push('the 3D view would read a different terrain from the simulation');
+    if (!v.squads || !v.squads.length) problems.push('the world view carries no squads');
+    if (typeof v.showsTeam !== 'function') problems.push('the world view cannot say which side is watching');
+    const n = v.squads.length;
+    g.hook('tick')(300);
+    if (g.hook('worldview')().squads !== v.squads) problems.push('the squad list was copied, so the 3D view would go stale');
+    if (v.squads.length < n) problems.push('squads vanished from under the renderer');
+  }
+  if (problems.length) bad('both renderers read one world', problems.join(BR));
+  else ok('both renderers read one world', 'terrain, squads and vision are shared, not copied');
+}
+
+
+// The 3D renderer, driven against a real battle in its own process. Everything
+// but the final draw call is arithmetic, and three.js does arithmetic in node,
+// so the code that runs sixty times a second in front of a player runs here too.
+{
+  let out = null;
+  try {
+    out = JSON.parse(execFileSync(process.execPath, [path.join(__dirname, 'render3drun.mjs')],
+      { encoding: 'utf8', maxBuffer: 1 << 24 }).trim().split('\n').pop());
+  } catch (e) {
+    bad('the 3D renderer survives a real battle', (e.stdout || '') + (e.stderr || '') || e.message);
+  }
+  if (out) {
+    if (out.ok) ok('the 3D renderer survives a real battle', out.frames + ' frames, two battlefields, no GPU');
+    else bad('the 3D renderer survives a real battle', out.fails.join(BR));
+  }
+}
+
+// The engine's own 3D path — the overlay, the strength chips, the minimap on its
+// own canvas — with a renderer that answers like the real one and draws nothing.
+// None of this code is reachable in the 2D path, so nothing else covers it.
+{
+  const g = loadGame({ quiet: true });
+  g.hook('seed')(4242);
+  startMatch(g, 'villages', 2000);
+  const problems = [];
+  if (!g.hook('fake3d')(true)) problems.push('the stub renderer would not start');
+  g.frames(6);
+  if (g.fault()) problems.push('drawing the 3D frame threw: ' + g.fault().split(BR)[1]);
+  if (g.el('ov').style.display !== 'block') problems.push('the overlay canvas is not showing');
+  if (g.el('cv').style.display !== 'none') problems.push('the top-down canvas is still showing under it');
+  g.hook('sel')();                                  // something selected draws order lines
+  g.hook('tick')(600);
+  g.frames(6);
+  if (g.fault()) problems.push('drawing orders in 3D threw: ' + g.fault().split(BR)[1]);
+  if (problems.length) bad('the 3D frame path draws without throwing', problems.join(BR));
+  else ok('the 3D frame path draws without throwing', 'overlay, orders, chips and minimap');
+}
+
+// And when it does throw — a driver fault, a device that lied about WebGL — the
+// battle must survive it. This is the one that matters: a renderer is a way of
+// looking at a match, not the match.
+{
+  const g = loadGame({ quiet: true });
+  g.hook('seed')(4242);
+  startMatch(g, 'villages', 2000);
+  const problems = [];
+  g.hook('fake3d')('break');
+  g.frames(3);
+  if (!g.fault()) problems.push('a renderer that threw was never reported');
+  if (g.el('cv').style.display === 'none') problems.push('the game did not fall back to the map');
+  const before = g.hook('hash')();
+  g.hook('tick')(120);
+  if (g.hook('hash')() === before) problems.push('the battle stopped');
+  if (g.frames(20) !== 20) problems.push('the animation loop stopped asking for frames');
+  if (problems.length) bad('a renderer that fails hands the battle back to the map', problems.join(BR));
+  else ok('a renderer that fails hands the battle back to the map', 'reported once, fell back, kept playing');
 }
 
 /* ------------------------------------------------------------------ */

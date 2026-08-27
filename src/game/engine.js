@@ -12,6 +12,9 @@ import { WALL, MINE, WIRE, TRENCH, ANGS, ANGNAME } from '../data/defences.js';
 import { NATION, ROMAN } from '../data/nations.js';
 import { MAPS } from '../data/maps.js';
 import * as T from '../world/terrain.js';
+import { hydrology } from '../world/hydrology.js';
+import { layNetwork, allConnected } from '../world/roads.js';
+import { scatterWoodland } from '../world/vegetation.js';
 import { WOOD, MARSH, ROCK, WATER, FORD, STONE, BUILD, SCORCH, CLIFF,
          WIRED, TRENCHED, FIELD, ROAD, RUBBLE, mobilityOf } from '../world/terrain.js';
 import { MAXLVL, RANKS, rankOf, nextRank, xpNeed } from '../data/ranks.js';
@@ -32,6 +35,14 @@ import { sfx, unlock as unlockAudio, listen, toggleMuted, isMuted,
 export function startGame() {
 /* ===================== world ===================== */
 const cv=document.getElementById('cv'),ctx=cv.getContext('2d',{alpha:false});
+// The battlefield is drawn by one of two renderers. A canvas can hold a 2D
+// context or a WebGL one but never both, so the 3D view gets its own canvas
+// and a transparent 2D one over it for the minimap.
+const glCv=document.getElementById('gl'),ovCv=document.getElementById('ov');
+const ovx=ovCv&&ovCv.getContext?ovCv.getContext('2d'):null;
+let viewMode=pick('view',['top','3d'],'3d');   // the map is still there, one tap away
+let gfx3=null,gfx3Busy=false;
+let worldId=0,ruinsN=0;                     // bumped when the world, or what stands on it, changes
 let dpr=1;
 
 let placeAng=Math.PI/2;                       // defences are laid along this bearing
@@ -556,6 +567,11 @@ function settle(type, x, y, r) {
 // R() - so two lockstep peers always fell the same trees at the same tick.
 let trees = [], treeAt = new Int32Array(1), woodN = new Uint16Array(1);
 let props = [];                                  // roads, yards and wells, baked into the ground
+let wet = new Float32Array(1);                   // how damp each cell is, from the water that drains through it
+let towns = [];                                  // the places worth connecting
+let routes = [];                                 // and the ways between them
+let roadMs = 0;                                  // how long they took to find
+const moistureAt = (x, y) => wet[gi(x, y)];
 let falling = [], treesDown = 0;
 const TMP = [];
 
@@ -606,6 +622,28 @@ function plantTrees() {
       if (terrainAt(x, y) & (WATER | FORD | BUILD)) continue;
       plantTree(x, y, s, gr);
     }
+  }
+}
+
+// Woodland that grew where the ground is damp enough to hold it. The blobs
+// above are the woods somebody drew; this is the one the water put there, and
+// it is what makes a valley read as a valley from above.
+function growWoodland() {
+  if (!wet || wet.length < 4) return;
+  const veg = MAPS[mapType].veg || { wet: .58, density: .4 };
+  const list = scatterWoodland(matchSeed, {
+    TW, TH, TG, moisture: wet,
+    slopeAt: i => {
+      const gx = i % TW, gy = (i / TW) | 0;
+      const l = hGrid[gy * TW + Math.max(0, gx - 1)], r = hGrid[gy * TW + Math.min(TW - 1, gx + 1)];
+      const u = hGrid[Math.max(0, gy - 1) * TW + gx], d = hGrid[Math.min(TH - 1, gy + 1) * TW + gx];
+      return Math.hypot(r - l, d - u);
+    },
+    open: i => (tGrid[i] & (WATER | FORD | BUILD | ROAD | STONE | CLIFF | ROCK)) === 0,
+  }, veg);
+  for (const t of list) {
+    if (t.x < 4 || t.y < 4 || t.x > W - 4 || t.y > H - 4) continue;
+    plantTree(t.x, t.y, t.s, t.gr);
   }
 }
 
@@ -905,6 +943,11 @@ function genTerrain(){
   traceRiver();         // water finds the low line and cuts its channel
   deriveLanes();        // the three sectors, where crossing actually costs least
   deriveElevation();    // four gameplay steps, quantised off the height field
+  // Where the water goes. Everything damp on this map is a consequence of the
+  // height field, not a decision: rain runs downhill, gathers, and the ground
+  // it gathers in is the ground things grow on.
+  wet = hydrology(hGrid, TW, TH).moisture;
+  towns = []; routes = [];
 
   if(mapType==='villages') genFarmland();
   else if(mapType==='mountains') genMountains();
@@ -967,6 +1010,8 @@ function genTerrain(){
       buildings.push({x:x+54,y:y+36,w:46,h:34,rot:0,bunker:true});
     });
   }
+  layRoads();                                  // the ways between the places that matter
+
   // ---- weather, wildlife, hearth smoke ----
   wind={a:rnd(0,6.28),v:rnd(.7,1.5)};
   sky = mapType==='desert' ? (R()<.55?'dust':'clear')
@@ -982,9 +1027,53 @@ function genTerrain(){
     v:rnd(30,55)*(R()<.5?-1:1),ph:rnd(0,6.28),n:3+((R()*4)|0),sp:rnd(9,15)});
   for(const b of buildings) b.hearth=R()<.45;
   plantTrees();                                // trunks last: nothing planted in water or through a wall
+  growWoodland();                              // and the wood the water grew
   spawnCivs();                                 // and the people who live here
   bakeTerrain();
   tGrid0=tGrid.slice();                        // the pristine ground, for save diffs
+  worldId++; ruinsN=0;                         // a new world for the 3D renderer to build
+}
+// Lay the road network.
+//
+// Roads are not drawn on this map, they are FOUND: the cheapest way between
+// two places that matter, over ground that charges for every metre of climb
+// and a great deal for water. That is why they swing round the steep ground,
+// take the narrow place to cross, and join each other instead of running side
+// by side - none of which is written down anywhere here.
+function layRoads(){
+  const T0=Date.now();
+  const nodes=[];
+  for(const c of castles) nodes.push({x:c.x,y:c.y,rank:0});
+  for(const t of towns)   nodes.push({x:t.x,y:t.y,rank:2});
+  for(const b of bases)   nodes.push({x:b.x,y:b.y,rank:1});
+  if(nodes.length<2){ routes=[]; return; }
+  const slopeCell=i=>{
+    const gx=i%TW, gy=(i/TW)|0;
+    const l=hGrid[gy*TW+Math.max(0,gx-1)], r=hGrid[gy*TW+Math.min(TW-1,gx+1)];
+    const u=hGrid[Math.max(0,gy-1)*TW+gx], d=hGrid[Math.min(TH-1,gy+1)*TW+gx];
+    return Math.hypot(r-l,d-u);
+  };
+  const net=layNetwork(nodes,{TW,TH,TG,
+    slopeAt:slopeCell,
+    isWater:i=>(tGrid[i]&(WATER|FORD))!==0,
+    // the fords and the bridge the battlefield was laid out around
+    crossable:i=>{ const x=(i%TW)*TG+TG/2, y=((i/TW)|0)*TG+TG/2;
+      for(const c of CROSS) if(Math.abs(y-c.y)<150) return true;
+      return false; },
+    blocked:i=>(tGrid[i]&CLIFF)!==0,
+    roaded:i=>(tGrid[i]&ROAD)!==0});
+  routes=net.routes; roadMs=Date.now()-T0;   // what it cost, for the probes
+  for(const r of routes){
+    for(let i=0;i<r.pts.length-1;i++){
+      const a=r.pts[i], b=r.pts[i+1];
+      const dx=b[0]-a[0], dy=b[1]-a[1], len=Math.hypot(dx,dy);
+      if(len<0.01) continue;
+      // Wide enough to be a road: the ground is stored in cells of 22, so a
+      // narrower line than this is a road nobody can see and armour cannot find.
+      stampLine((a[0]+b[0])/2,(a[1]+b[1])/2,Math.atan2(dy,dx),len+TG,15,ROAD);
+    }
+    props.push({kind:'route',pts:r.pts,crossings:r.crossings});
+  }
 }
 function stampBuildings(){
   bGrid=new Int32Array(TW*TH).fill(-1);
@@ -1032,6 +1121,7 @@ function village(cx,cy,houses,rx,ry){
   blob(cx,cy,rx,ry,STONE);
   const RX=rx*FS,RY=ry*FS;
   const road=rnd(0,3.14),ca=Math.cos(road),sa=Math.sin(road);
+  towns.push({x:cx,y:cy,rank:2});                 // somewhere the roads will want to reach
   const rw=rnd(15,22);
   props.push({kind:'road',x:cx,y:cy,a:road,len:RX*2.25,w:rw});
   stampLine(cx,cy,road,RX*2.25,rw*.5,ROAD);      // metalled: armour rolls, and it never turns to mud
@@ -1360,7 +1450,23 @@ function bakeTerrain(){
 
   // roads, yards and wells: the things that make a village read as lived in
   for(const p of props){
-    if(p.kind==='road'){
+    if(p.kind==='route'){                       // a routed road, following the ground
+      const pts=p.pts;
+      if(pts.length<2) continue;
+      g.lineCap='round'; g.lineJoin='round';
+      const run=()=>{ g.beginPath(); g.moveTo(pts[0][0],pts[0][1]);
+        for(let i=1;i<pts.length;i++) g.lineTo(pts[i][0],pts[i][1]); g.stroke(); };
+      g.strokeStyle='rgba(58,50,34,.30)'; g.lineWidth=22; run();   // the verge
+      g.strokeStyle='rgba(126,110,78,.52)'; g.lineWidth=16; run(); // the metalling
+      g.strokeStyle='rgba(92,78,52,.34)'; g.lineWidth=3; run();    // a cart rut down the middle
+      for(const c of p.crossings||[]){         // a deck where it takes the water
+        g.fillStyle='rgba(120,110,92,.85)';
+        g.fillRect(c.x-16,c.y-16,32,32);
+        g.strokeStyle='rgba(50,42,28,.6)'; g.lineWidth=2;
+        g.strokeRect(c.x-16,c.y-16,32,32);
+      }
+      g.lineCap='butt'; g.lineJoin='miter';
+    } else if(p.kind==='road'){
       g.save(); g.translate(p.x,p.y); g.rotate(p.a);
       g.fillStyle='rgba(124,108,76,.45)'; g.fillRect(-p.len/2,-p.w/2,p.len,p.w);
       g.strokeStyle='rgba(66,56,38,.38)'; g.lineWidth=1.5;
@@ -1770,7 +1876,7 @@ function hurtBuilding(b,amt){
 // The house is gone: what it stood on becomes a rubble field. Kept apart from
 // collapse() so a loaded battle can put the ruin back without the blast.
 function razeBuilding(b){
-  b.dead=true; b.hold=null; b.tint=0; b.hp=0;
+  b.dead=true; b.hold=null; b.tint=0; b.hp=0; ruinsN++;
   for(let gy=((b.y-b.h/2)/TG|0);gy<=((b.y+b.h/2)/TG|0);gy++)
     for(let gx=((b.x-b.w/2)/TG|0);gx<=((b.x+b.w/2)/TG|0);gx++){
       if(gx<0||gy<0||gx>=TW||gy>=TH) continue;
@@ -3077,6 +3183,7 @@ function openMenu(){
     +Math.round((ownCastle('blue')?ownCastle('blue').hp/ownCastle('blue').max:0)*100)+'% / '
     +Math.round((ownCastle('red')?ownCastle('red').hp/ownCastle('red').max:0)*100)+'% · '+Math.round(1000/Math.max(frameMs,1))+' fps';
   el('mQuality').textContent='Graphics: '+(quality?'high':'fast');
+  paintViewBtn();
   el('mSound').textContent='Sound: '+(isMuted()?'off':'on');
   el('mShake').textContent='Screen shake: '+(prof.shake===false?'off':'on');
   el('mHaptics').textContent='Vibration: '+(prof.haptics?'on':'off');
@@ -3502,7 +3609,20 @@ function showFault(msg){
       +'\n\nTell the developer this message. Trying to keep running in fast mode.';
   }catch(e){}
 }
-window.addEventListener('error',e=>showFault((e.message||'error')+' @ line '+(e.lineno||'?')));
+window.addEventListener('error',e=>showFault(faultText(e.error,e.message,e.lineno,e.colno)));
+window.addEventListener('unhandledrejection',e=>showFault(faultText(e.reason,'unhandled promise')));
+// The message alone says nothing useful once the code is bundled onto one
+// line. The top of the stack names the function that actually threw.
+function faultText(err,msg,line,col){
+  let out=(err&&err.message)||msg||'error';
+  if(line!==undefined) out+=' @ '+line+':'+(col===undefined?'?':col);
+  const st=err&&err.stack;
+  if(st){
+    const lines=String(st).split('\n').slice(0,4).map(l=>l.trim()).filter(l=>l&&l!==out);
+    if(lines.length) out+='\n'+lines.join('\n');
+  }
+  return out;
+}
 function frame(now){
   let dt=(now-last)/1000; last=now;
   frameMs+=((dt*1000)-frameMs)*.08;
@@ -3518,10 +3638,23 @@ function frame(now){
     if(frameMs>26&&quality===1) quality=0;
     else if(frameMs<17&&quality===0) quality=1;
   }
-  try{ updateVision(Math.min(dt,.05)); paintHud(dt); draw(); }
+  try{
+    updateVision(Math.min(dt,.05)); paintHud(dt);
+    if(viewMode==='3d'&&gfx3) draw3(); else draw();
+  }
   catch(err){
     frameErr++;
-    if(frameErr===1){ qualityLock=true; quality=0; showFault(String(err&&err.message||err)); }
+    if(viewMode==='3d'){
+      // The map is always there and always works. Falling back to it beats
+      // showing a red bar over a battle nobody can see.
+      console.warn('[iron-front] the 3D battlefield failed, falling back to the map:',err);
+      if(frameErr===1) showFault(faultText(err,'the 3D battlefield failed'));
+      setView('top',true);
+      toast('The 3D battlefield stopped - back to the map');
+      // and NOT a return: the frame still has to ask for the next one, or the
+      // game freezes on the way down instead of carrying on without it
+    }
+    else if(frameErr===1){ qualityLock=true; quality=0; showFault(faultText(err)); }
   }
   requestAnimationFrame(frame);
 }
@@ -3669,6 +3802,55 @@ function stateHash(){
   mix(seed());
   return h>>>0;
 }
+/* ===================== the 3D battlefield ===================== */
+// Everything the second renderer may read, gathered once a frame. References,
+// not copies - and read-only by convention: a renderer that wrote to any of
+// this would put the two machines in a match on different courses.
+function worldView(){
+  return {
+    terrain, cam, pal:MAPS[mapType].pal, worldId, treesDown, ruins:ruinsN,
+    squads, soldiers, buildings, trees, walls, castles, bases, shots, parts,
+    selected, phase, clock, tod, sun, dayLight, night,
+    viewTeam:viewTeam(), showsTeam:visible
+  };
+}
+function can3D(){                            // WebGL2, or there is nothing to talk to
+  try{
+    const c=document.createElement('canvas');
+    const gl=c.getContext&&c.getContext('webgl2');
+    return !!(gl&&typeof gl.createShader==='function');
+  }catch(e){ return false; }
+}
+async function setView(mode,quiet){
+  if(mode==='3d'&&!gfx3){
+    if(gfx3Busy) return;
+    if(!glCv||!can3D()){
+      if(!quiet) toast('This device cannot show the 3D battlefield');
+      viewMode='top'; paintViewBtn(); return;      // and the menu says what is true
+    }
+    gfx3Busy=true;
+    try{
+      const mod=await import('../render/three/scene.js');
+      gfx3=mod.createScene({canvas:glCv,view:worldView()});
+    }catch(e){
+      console.warn('[iron-front] the 3D battlefield could not start:',e);
+      if(!quiet) toast('The 3D battlefield could not start');
+      viewMode='top'; paintViewBtn(); gfx3Busy=false; return;
+    }
+    gfx3Busy=false;
+  }
+  viewMode=mode; write('view',mode);
+  const three=mode==='3d';
+  cv.style.display=three?'none':'block';
+  if(glCv) glCv.style.display=three?'block':'none';
+  if(ovCv) ovCv.style.display=three?'block':'none';
+  resize(); paintViewBtn();
+  if(!quiet) toast(three?'Three dimensions - drag to look, pinch to close in':'Back to the map');
+}
+function paintViewBtn(){
+  const b=el('mView'); if(b) b.textContent='View: '+(viewMode==='3d'?'3D':'top-down');
+}
+
 /* ===================== camera ===================== */
 function resize(){
   const st=el('stage'),w=st.clientWidth,h=st.clientHeight;
@@ -3680,9 +3862,15 @@ function resize(){
   dpr=Math.min(window.devicePixelRatio||1,1.5);
   cv.width=Math.max(1,Math.round(w*dpr)); cv.height=Math.max(1,Math.round(h*dpr));
   cv.style.width=w+'px'; cv.style.height=h+'px';
+  if(ovCv){ ovCv.width=cv.width; ovCv.height=cv.height;
+    ovCv.style.width=w+'px'; ovCv.style.height=h+'px'; }
+  if(gfx3) gfx3.resize(w,h,dpr);
   mini.r=clamp(Math.min(w,h)*.13,66,124);
-  const deckH=(el('hud')&&el('hud').offsetHeight)||90;
-  mini.cx=mini.r+12; mini.cy=deckH+mini.r+12;
+  // The minimap tucks under the status strip; the deck is at the foot of the
+  // screen now, and the zoom buttons need to know how tall it is to clear it.
+  const topH=(el('top')&&el('top').offsetHeight)||46;
+  syncDeck();
+  mini.cx=mini.r+12; mini.cy=topH+mini.r+12;
   mini.s=(mini.r*2*.94)/W;
   mini.w=W*mini.s; mini.h=H*mini.s;
   mini.x=mini.cx-mini.w/2; mini.y=mini.cy-mini.h/2;
@@ -3690,6 +3878,19 @@ function resize(){
   // keep the same zoom and the same point centred — opening a panel must not move the camera
   cam.s=clamp(oldS,Math.min(w/W,h/H)*.9,4);
   cam.x=w/2-cxw*cam.s; cam.y=h/2-cyw*cam.s;
+}
+// How tall the command deck is, published to the stylesheet so the zoom
+// buttons can sit clear of it. It changes whenever a row appears - deploy to
+// battle, an engineer selected - so it is checked as the HUD is painted rather
+// than only when the window resizes.
+let deckH=0;
+function syncDeck(){
+  const d=el('deck'),st=el('stage');
+  if(!d||!st||!st.style||!st.style.setProperty) return;
+  const h=d.offsetHeight||0;
+  if(h===deckH||h<=0) return;
+  deckH=h;
+  st.style.setProperty('--deck-h',h+'px');
 }
 function fit(){
   const w=cv.width/dpr,h=cv.height/dpr;
@@ -3705,7 +3906,9 @@ function lookAt(x,y){
   const w=cv.width/dpr,h=cv.height/dpr;
   cam.x=w/2-x*cam.s; cam.y=h/2-y*cam.s;
 }
-const s2w=(px,py)=>({x:(px-cam.x)/cam.s,y:(py-cam.y)/cam.s});
+const s2w=(px,py)=>(viewMode==='3d'&&gfx3)
+  ? gfx3.screenToWorld(px,py,terrain)
+  : {x:(px-cam.x)/cam.s,y:(py-cam.y)/cam.s};
 const w2sx=x=>x*cam.s+cam.x, w2sy=y=>y*cam.s+cam.y;
 const COL={
   blue:{body:'#5C8FD0',dark:'#27436E',lt:'#BBD7FA',deep:'#16294A',
@@ -3770,6 +3973,152 @@ let vx0=0,vy0=0,vx1=0,vy1=0;
 // drawn later; anything flying is drawn after everything on the ground.
 const DRAW=[];
 const depthCmp=(a,b)=>(a.sq.t.air?1:0)-(b.sq.t.air?1:0)||a.y-b.y;
+
+// The flat things that still belong over a battlefield with depth: what you
+// have ordered, where you may put men, and where the shells are landing.
+//
+// Drawn on the overlay canvas rather than in the scene, on purpose. An order
+// line is not part of the world - it is a thing the commander is told, and it
+// should stay legible whatever the ground is doing underneath it.
+function drawOverlay(g,w,h){
+  const team=viewTeam(),c=COL[team];
+  const P=(x,y)=>gfx3.worldToScreen(x,y,terrain);
+  g.lineCap='round'; g.lineJoin='round';
+
+  // ---- the ground you may deploy onto, while you are deploying ----
+  if(phase==='deploy'){
+    const edge=y=>{ const rx=hasWater()?riverXAt(y):W/2,bank=hasWater()?BANK:30;
+      return depTeam==='blue'?rx-bank:rx+bank; };
+    g.strokeStyle='rgba(201,162,39,.5)'; g.lineWidth=1.8; g.setLineDash([10,8]);
+    g.beginPath();
+    let on=false;
+    for(let y=30;y<=H-30;y+=80){
+      const pt=P(edge(y),y);
+      if(pt.behind){ on=false; continue; }
+      if(on) g.lineTo(pt.x,pt.y); else { g.moveTo(pt.x,pt.y); on=true; }
+    }
+    g.stroke(); g.setLineDash([]);
+  }
+
+  // ---- blast waves, so a shell landing reads as a shell landing ----
+  for(let i=0;i<rings.length;i++){
+    const r=rings[i],k=1-r.t/r.max,rad=r.r+(r.to-r.r)*k;
+    const a=P(r.x,r.y); if(a.behind) continue;
+    const b=P(r.x+rad,r.y);
+    const sr=Math.hypot(b.x-a.x,b.y-a.y);
+    if(sr<1||sr>w) continue;
+    g.strokeStyle='rgba(255,214,150,'+(0.5*(1-k)).toFixed(3)+')';
+    g.lineWidth=2.2;
+    g.beginPath(); g.arc(a.x,a.y,sr,0,6.28); g.stroke();
+  }
+
+  // ---- where you just told someone to go ----
+  for(const q of pings){
+    const a=P(q.x,q.y); if(a.behind) continue;
+    const k=1-q.t/.9;
+    g.strokeStyle=c.lt; g.globalAlpha=Math.max(0,1-k)*0.8; g.lineWidth=2;
+    g.beginPath(); g.arc(a.x,a.y,6+22*k,0,6.28); g.stroke();
+    g.globalAlpha=1;
+  }
+
+  // ---- what the selected units have been told to do ----
+  if(phase==='battle'&&selected.length){
+    for(const sq of selected){
+      if(sq.gone||sq.alive<=0) continue;
+      const legs=[];
+      const o=sq.order;
+      if(o.kind==='move') legs.push({x:o.x,y:o.y,fight:false});
+      else if((o.kind==='attack'||o.kind==='charge')&&o.sq&&!o.sq.gone)
+        legs.push({x:o.sq.fx,y:o.sq.fy,fight:true});
+      for(const qd of sq.queue||[]){
+        if(qd.kind==='move') legs.push({x:qd.x,y:qd.y,fight:false});
+        else if(qd.sq&&!qd.sq.gone) legs.push({x:qd.sq.fx,y:qd.sq.fy,fight:true});
+      }
+      if(!legs.length) continue;
+      const from=P(sq.fx,sq.fy);
+      if(from.behind) continue;
+      g.strokeStyle=c.lt; g.globalAlpha=.5; g.lineWidth=2; g.setLineDash([9,8]);
+      g.beginPath(); g.moveTo(from.x,from.y);
+      const pts=[];
+      for(const l of legs){ const pt=P(l.x,l.y); pts.push(pt); if(!pt.behind) g.lineTo(pt.x,pt.y); }
+      g.stroke(); g.setLineDash([]); g.globalAlpha=1;
+      pts.forEach((pt,i)=>{
+        if(pt.behind) return;
+        if(legs[i].fight){                            // a cross where you told them to fight
+          g.strokeStyle='rgba(226,120,104,.9)'; g.lineWidth=2.6;
+          g.beginPath();
+          g.moveTo(pt.x-7,pt.y-7); g.lineTo(pt.x+7,pt.y+7);
+          g.moveTo(pt.x+7,pt.y-7); g.lineTo(pt.x-7,pt.y+7);
+          g.stroke();
+        } else {                                      // a stop on the way
+          g.fillStyle=c.lt;
+          g.beginPath(); g.arc(pt.x,pt.y,7,0,6.28); g.fill();
+          g.fillStyle='rgba(16,18,14,.85)';
+          g.beginPath(); g.arc(pt.x,pt.y,3.8,0,6.28); g.fill();
+        }
+        if(i===pts.length-1&&pts.length>1){
+          g.fillStyle=c.lt; g.textAlign='center';
+          g.fillText(String(pts.length),pt.x,pt.y-16);
+        }
+      });
+    }
+    const rp=rally[team];
+    if(rp){                                           // the rally flag
+      const a=P(rp.x,rp.y);
+      if(!a.behind){
+        g.strokeStyle=c.lt; g.lineWidth=2.4;
+        g.beginPath(); g.moveTo(a.x,a.y); g.lineTo(a.x,a.y-26); g.stroke();
+        g.fillStyle=c.lt;
+        g.beginPath();
+        g.moveTo(a.x,a.y-26); g.lineTo(a.x+16,a.y-20); g.lineTo(a.x,a.y-14);
+        g.closePath(); g.fill();
+      }
+    }
+  }
+  g.lineCap='butt'; g.lineJoin='miter';
+}
+
+function draw3(){
+  const w=cv.width/dpr,h=cv.height/dpr;
+  // What the camera is looking at, for the ambient scatter and the sound mix.
+  const fx=(w/2-cam.x)/cam.s,fy=(h/2-cam.y)/cam.s,rad=h/Math.max(.0001,cam.s);
+  vx0=fx-rad; vx1=fx+rad; vy0=fy-rad; vy1=fy+rad;
+  listen(fx,fy,rad,rad);
+  gfx3.frame(worldView());
+  if(ovx){
+    ovx.setTransform(dpr,0,0,dpr,0,0);
+    ovx.clearRect(0,0,w,h);
+    ovx.font='600 11px "Barlow Condensed",system-ui,sans-serif';
+    drawOverlay(ovx,w,h);
+    // Who is who. A three dimensional field is harder to read than a map, so
+    // every formation still carries its strength above it.
+    ovx.font='600 11px "Barlow Condensed",system-ui,sans-serif';
+    ovx.textAlign='center'; ovx.textBaseline='middle';
+    for(let i=0;i<squads.length;i++){
+      const sq=squads[i];
+      if(sq.gone||sq.routed||!visible(sq.team)||!sq.seen) continue;
+      const p=gfx3.worldToScreen(sq.fx,sq.fy,terrain);
+      if(p.behind||p.x<-60||p.y<-60||p.x>w+60||p.y>h+60) continue;
+      const txt=sq.alive+(sq.alive===sq.initial?'':'/'+sq.initial);
+      const tw=ovx.measureText(txt).width+16;
+      const y=p.y-34;
+      ovx.fillStyle='rgba(12,12,9,.72)';
+      ovx.fillRect(p.x-tw/2,y-8,tw,16);
+      ovx.fillStyle=sq.team==='blue'?COL.blue.lt:COL.red.lt;
+      ovx.fillRect(p.x-tw/2,y-8,3,16);
+      ovx.fillStyle='#E6D8B8';
+      ovx.fillText(txt,p.x+1.5,y);
+    }
+    if(box.on){                              // dragging a selection
+      const x0=Math.min(box.x0,box.x1),y0=Math.min(box.y0,box.y1);
+      ovx.strokeStyle='rgba(201,162,39,.9)'; ovx.lineWidth=1.5;
+      ovx.fillStyle='rgba(201,162,39,.12)';
+      ovx.fillRect(x0,y0,Math.abs(box.x1-box.x0),Math.abs(box.y1-box.y0));
+      ovx.strokeRect(x0,y0,Math.abs(box.x1-box.x0),Math.abs(box.y1-box.y0));
+    }
+    drawMini(ovx);
+  }
+}
 function draw(){
   const w=cv.width/dpr,h=cv.height/dpr;
   ctx.setTransform(dpr,0,0,dpr,0,0);
@@ -4862,98 +5211,102 @@ function drawBuildings(){
     ctx.restore();
   }
 }
-function drawMini(){
+// The minimap. Takes the context to draw into, because in the 3D view it
+// lands on the overlay canvas rather than on the battlefield itself.
+function drawMini(g){
+  g=g||ctx;
   const {x,y,w:mw,h:mh,s,cx,cy,r}=mini;
-  ctx.save();
-  ctx.beginPath(); ctx.arc(cx,cy,r,0,6.28); ctx.closePath();
-  ctx.fillStyle='rgba(10,10,8,.9)'; ctx.fill();
-  ctx.clip();
-  ctx.fillStyle='rgba(69,70,50,.6)'; ctx.fillRect(x,y,mw,mh);
+  g.save();
+  g.beginPath(); g.arc(cx,cy,r,0,6.28); g.closePath();
+  g.fillStyle='rgba(10,10,8,.9)'; g.fill();
+  g.clip();
+  g.fillStyle='rgba(69,70,50,.6)'; g.fillRect(x,y,mw,mh);
   {
     const bw=mw/TX,bh=mh/TY;
     for(let gy=0;gy<TY;gy++) for(let gx=0;gx<TX;gx++){
       const o=terrOwn[gy*TX+gx];
-      ctx.fillStyle=o===1?'rgba(76,127,191,.34)':o===2?'rgba(190,59,46,.34)':'rgba(0,0,0,0)';
-      ctx.fillRect(x+gx*bw,y+gy*bh,bw,bh);
+      g.fillStyle=o===1?'rgba(76,127,191,.34)':o===2?'rgba(190,59,46,.34)':'rgba(0,0,0,0)';
+      g.fillRect(x+gx*bw,y+gy*bh,bw,bh);
     }
   }
-  ctx.strokeStyle='rgba(201,162,39,.45)'; ctx.lineWidth=1; ctx.strokeRect(x-1,y-1,mw+2,mh+2);
+  g.strokeStyle='rgba(201,162,39,.45)'; g.lineWidth=1; g.strokeRect(x-1,y-1,mw+2,mh+2);
   if(hasWater()){
-    ctx.strokeStyle=MAPS[mapType].water==='canal'?'rgba(80,120,132,.85)':'rgba(90,140,150,.85)';
-    ctx.lineWidth=Math.max(2,52*s);
-    ctx.beginPath(); for(let yy=0;yy<=H;yy+=40) ctx.lineTo(x+riverXAt(yy)*s,y+yy*s); ctx.stroke();
-    if(mapType==='beach'){ ctx.lineWidth=Math.max(2,150*s);
-      ctx.beginPath(); ctx.moveTo(x,y+(H-95)*s); ctx.lineTo(x+mw,y+(H-95)*s); ctx.stroke(); }
+    g.strokeStyle=MAPS[mapType].water==='canal'?'rgba(80,120,132,.85)':'rgba(90,140,150,.85)';
+    g.lineWidth=Math.max(2,52*s);
+    g.beginPath(); for(let yy=0;yy<=H;yy+=40) g.lineTo(x+riverXAt(yy)*s,y+yy*s); g.stroke();
+    if(mapType==='beach'){ g.lineWidth=Math.max(2,150*s);
+      g.beginPath(); g.moveTo(x,y+(H-95)*s); g.lineTo(x+mw,y+(H-95)*s); g.stroke(); }
   } else {
-    ctx.strokeStyle='rgba(190,168,110,.5)'; ctx.lineWidth=Math.max(2,90*s);
-    ctx.beginPath(); for(let yy=0;yy<=H;yy+=40) ctx.lineTo(x+riverXAt(yy)*s,y+yy*s); ctx.stroke();
+    g.strokeStyle='rgba(190,168,110,.5)'; g.lineWidth=Math.max(2,90*s);
+    g.beginPath(); for(let yy=0;yy<=H;yy+=40) g.lineTo(x+riverXAt(yy)*s,y+yy*s); g.stroke();
   }
-  ctx.strokeStyle='rgba(236,224,180,.9)'; ctx.lineWidth=2;
+  g.strokeStyle='rgba(236,224,180,.9)'; g.lineWidth=2;
   if(hasWater()) for(const cr of CROSS){
-    ctx.lineWidth=cr.type==='bridge'?4:2;
-    ctx.beginPath();
-    ctx.moveTo(x+(riverXAt(cr.y)-40)*s,y+cr.y*s); ctx.lineTo(x+(riverXAt(cr.y)+40)*s,y+cr.y*s); ctx.stroke(); }
-  ctx.lineWidth=2;
-  ctx.strokeStyle='rgba(201,162,39,.2)'; ctx.lineWidth=1;
-  for(const dy of div){ ctx.beginPath(); ctx.moveTo(x,y+dy*s); ctx.lineTo(x+mw,y+dy*s); ctx.stroke(); }
+    g.lineWidth=cr.type==='bridge'?4:2;
+    g.beginPath();
+    g.moveTo(x+(riverXAt(cr.y)-40)*s,y+cr.y*s); g.lineTo(x+(riverXAt(cr.y)+40)*s,y+cr.y*s); g.stroke(); }
+  g.lineWidth=2;
+  g.strokeStyle='rgba(201,162,39,.2)'; g.lineWidth=1;
+  for(const dy of div){ g.beginPath(); g.moveTo(x,y+dy*s); g.lineTo(x+mw,y+dy*s); g.stroke(); }
   for(const c of castles){
-    ctx.fillStyle=c.dead?'#4A443A':COL[c.team].lt;
-    ctx.fillRect(x+(c.x-c.hw)*s,y+(c.y-c.hh)*s,c.hw*2*s,c.hh*2*s);
-    ctx.strokeStyle='rgba(20,16,10,.8)'; ctx.lineWidth=1;
-    ctx.strokeRect(x+(c.x-c.hw)*s,y+(c.y-c.hh)*s,c.hw*2*s,c.hh*2*s);
+    g.fillStyle=c.dead?'#4A443A':COL[c.team].lt;
+    g.fillRect(x+(c.x-c.hw)*s,y+(c.y-c.hh)*s,c.hw*2*s,c.hh*2*s);
+    g.strokeStyle='rgba(20,16,10,.8)'; g.lineWidth=1;
+    g.strokeRect(x+(c.x-c.hw)*s,y+(c.y-c.hh)*s,c.hw*2*s,c.hh*2*s);
   }
   for(let i=0;i<fires.length;i++){
-    ctx.fillStyle='rgba(255,150,60,.9)';
-    ctx.beginPath(); ctx.arc(x+fires[i].x*s,y+fires[i].y*s,1.6,0,6.28); ctx.fill();
+    g.fillStyle='rgba(255,150,60,.9)';
+    g.beginPath(); g.arc(x+fires[i].x*s,y+fires[i].y*s,1.6,0,6.28); g.fill();
   }
   for(let i=0;i<buildings.length;i++){
     const b=buildings[i];
     if(b.dead||!b.hold||b.tint<.3) continue;
-    ctx.fillStyle=COL[b.hold].body;
-    ctx.fillRect(x+b.x*s-1,y+b.y*s-1,2.4,2.4);
+    g.fillStyle=COL[b.hold].body;
+    g.fillRect(x+b.x*s-1,y+b.y*s-1,2.4,2.4);
   }
   for(let i=0;i<bases.length;i++){
     const b=bases[i];
     if(b.dead) continue;
-    ctx.strokeStyle=COL[b.team].lt; ctx.lineWidth=1.4;
-    ctx.strokeRect(x+b.x*s-3,y+b.y*s-3,6,6);
-    if(b.cap>0){ ctx.fillStyle=COL[other(b.team)].body; ctx.fillRect(x+b.x*s-3,y+b.y*s-3,6*b.cap,6); }
+    g.strokeStyle=COL[b.team].lt; g.lineWidth=1.4;
+    g.strokeRect(x+b.x*s-3,y+b.y*s-3,6,6);
+    if(b.cap>0){ g.fillStyle=COL[other(b.team)].body; g.fillRect(x+b.x*s-3,y+b.y*s-3,6*b.cap,6); }
   }
   for(let i=0;i<squads.length;i++){
     const sq=squads[i];
     if(sq.gone||!visible(sq.team)||!sq.seen) continue;
     const sel=selected.indexOf(sq)>=0;
-    ctx.fillStyle=sel?'#F5DC96':COL[sq.team].body;
-    ctx.beginPath(); ctx.arc(x+sq.fx*s,y+sq.fy*s,sel?2.8:2,0,6.28); ctx.fill();
+    g.fillStyle=sel?'#F5DC96':COL[sq.team].body;
+    g.beginPath(); g.arc(x+sq.fx*s,y+sq.fy*s,sel?2.8:2,0,6.28); g.fill();
   }
   const v0=s2w(0,0),v1=s2w(cv.width/dpr,cv.height/dpr);
-  ctx.strokeStyle='rgba(255,255,255,.6)'; ctx.lineWidth=1.2;
-  ctx.strokeRect(x+clamp(v0.x,0,W)*s,y+clamp(v0.y,0,H)*s,
+  g.strokeStyle='rgba(255,255,255,.6)'; g.lineWidth=1.2;
+  g.strokeRect(x+clamp(v0.x,0,W)*s,y+clamp(v0.y,0,H)*s,
     (clamp(v1.x,0,W)-clamp(v0.x,0,W))*s,(clamp(v1.y,0,H)-clamp(v0.y,0,H))*s);
-  ctx.restore();
+  g.restore();
   // brass rim with bearing ticks
-  ctx.strokeStyle='rgba(201,162,39,.75)'; ctx.lineWidth=2.4;
-  ctx.beginPath(); ctx.arc(cx,cy,r,0,6.28); ctx.stroke();
-  ctx.strokeStyle='rgba(14,13,10,.75)'; ctx.lineWidth=1;
-  ctx.beginPath(); ctx.arc(cx,cy,r+1.6,0,6.28); ctx.stroke();
-  ctx.strokeStyle='rgba(230,216,184,.45)'; ctx.lineWidth=1.4;
+  g.strokeStyle='rgba(201,162,39,.75)'; g.lineWidth=2.4;
+  g.beginPath(); g.arc(cx,cy,r,0,6.28); g.stroke();
+  g.strokeStyle='rgba(14,13,10,.75)'; g.lineWidth=1;
+  g.beginPath(); g.arc(cx,cy,r+1.6,0,6.28); g.stroke();
+  g.strokeStyle='rgba(230,216,184,.45)'; g.lineWidth=1.4;
   for(let a=0;a<6.28;a+=Math.PI/6){
     const long=Math.abs(a%(Math.PI/2))<.01;
-    ctx.beginPath();
-    ctx.moveTo(cx+Math.cos(a)*(r-(long?9:5)),cy+Math.sin(a)*(r-(long?9:5)));
-    ctx.lineTo(cx+Math.cos(a)*(r-1),cy+Math.sin(a)*(r-1)); ctx.stroke();
+    g.beginPath();
+    g.moveTo(cx+Math.cos(a)*(r-(long?9:5)),cy+Math.sin(a)*(r-(long?9:5)));
+    g.lineTo(cx+Math.cos(a)*(r-1),cy+Math.sin(a)*(r-1)); g.stroke();
   }
-  ctx.fillStyle='rgba(230,216,184,.6)'; ctx.font='700 9px "Barlow Condensed", sans-serif';
-  ctx.textAlign='center'; ctx.textBaseline='middle';
-  ctx.fillText('N',cx,cy-r+8); ctx.fillText('S',cx,cy+r-8);
-  ctx.fillText('W',cx-r+8,cy); ctx.fillText('E',cx+r-8,cy);
-  ctx.textAlign='left'; ctx.textBaseline='alphabetic';
+  g.fillStyle='rgba(230,216,184,.6)'; g.font='700 9px "Barlow Condensed", sans-serif';
+  g.textAlign='center'; g.textBaseline='middle';
+  g.fillText('N',cx,cy-r+8); g.fillText('S',cx,cy+r-8);
+  g.fillText('W',cx-r+8,cy); g.fillText('E',cx+r-8,cy);
+  g.textAlign='left'; g.textBaseline='alphabetic';
 }
 
 /* ===================== HUD ===================== */
 let hudAcc=0,lastInfo='',lastPhase='',lastClock='';
 function paintHud(dt){
   hudAcc-=dt; if(hudAcc>0) return; hudAcc=.12;
+  syncDeck();
   let bl=0,rd=0,b0=0,r0=0;
   for(let i=0;i<squads.length;i++){
     const sq=squads[i];
@@ -5203,7 +5556,9 @@ function iconDataURL(key,size,col){
 const box={on:false,x0:0,y0:0,x1:0,y1:0};
 let selectMode=false;      // Select button: one finger draws a box instead of panning
 let ptr={down:false,moved:false,touch:false,sx:0,sy:0,pan:false,lx:0,ly:0},pinch=null,lastTap=-9,lastSq=null;
-const canvasPos=e=>{ const r=cv.getBoundingClientRect(); return {x:e.clientX-r.left,y:e.clientY-r.top}; };
+// Measured against the stage, not the canvas: a hidden canvas has no box, and
+// one of the two is always hidden.
+const canvasPos=e=>{ const r=el('stage').getBoundingClientRect(); return {x:e.clientX-r.left,y:e.clientY-r.top}; };
 const inMini=(px,py)=>Math.hypot(px-mini.cx,py-mini.cy)<=mini.r;
 // Picking men off the field ends buy mode: the card lights up while you are
 // buying and goes out the moment you touch a unit that already exists.
@@ -5388,15 +5743,17 @@ function onUp(){
     }
   }
 }
-cv.addEventListener('mousedown',onDown);
+for(const surf of [cv,ovCv]){ if(!surf) continue;
+  surf.addEventListener('mousedown',onDown);
 window.addEventListener('mousemove',onMove);
 window.addEventListener('mouseup',onUp);
-cv.addEventListener('touchstart',onDown,{passive:false});
-cv.addEventListener('touchmove',onMove,{passive:false});
-cv.addEventListener('touchend',onUp);
-cv.addEventListener('touchcancel',()=>{ptr.down=false;pinch=null;box.on=false;});
-cv.addEventListener('contextmenu',e=>e.preventDefault());
-cv.addEventListener('wheel',e=>{ const p=canvasPos(e); zoomAt(e.deltaY<0?1.12:.89,p.x,p.y); e.preventDefault(); },{passive:false});
+  surf.addEventListener('touchstart',onDown,{passive:false});
+  surf.addEventListener('touchmove',onMove,{passive:false});
+  surf.addEventListener('touchend',onUp);
+  surf.addEventListener('touchcancel',()=>{ptr.down=false;pinch=null;box.on=false;});
+  surf.addEventListener('contextmenu',e=>e.preventDefault());
+  surf.addEventListener('wheel',e=>{ const p=canvasPos(e); zoomAt(e.deltaY<0?1.12:.89,p.x,p.y); e.preventDefault(); },{passive:false});
+}
 document.addEventListener('keydown',e=>{
   if(e.key==='Escape'){
     if(!paused&&(selected.length||placing)){ selected=[]; placing=null; buildPalette(); return; }
@@ -5541,6 +5898,8 @@ el('shareEnd').onclick=shareGame;
 el('again').onclick=()=>{ el('endVeil').style.display='none'; el('startVeil').style.display='flex'; phase='start'; };
 loadProf();
 SAVES.prune(); refreshLoadButton();
+paintViewBtn();
+if(viewMode==='3d') setView('3d',true);   // quietly: a device that cannot, just does not
 el('pname').value=prof.name;
 el('pname').oninput=()=>{ prof.name=(el('pname').value||'Commander').slice(0,18); saveProf(); };
 paintProf();
@@ -5608,6 +5967,7 @@ el('mShake').onclick=()=>{ prof.shake=prof.shake===false; saveProf();
   el('mShake').textContent='Screen shake: '+(prof.shake===false?'off':'on'); };
 el('mHaptics').onclick=()=>{ prof.haptics=!prof.haptics; saveProf();
   el('mHaptics').textContent='Vibration: '+(prof.haptics?'on':'off'); };
+el('mView').onclick=()=>{ setView(viewMode==='3d'?'top':'3d'); };
 el('mQuality').onclick=()=>{ qualityLock=true; quality=quality?0:1;
   write('gfx',quality?'high':'fast');
   el('mQuality').textContent='Graphics: '+(quality?'high':'fast'); };
@@ -5711,6 +6071,27 @@ try{ window.__lvl=(t,n)=>{ lvl[t]=n; buildPalette(); };
        for(const t of l) fellTree(t,0); return l.length; };
      window.__wood=(x,y)=>!!(terrainAt(x,y)&WOOD);
      window.__cell=(x,y)=>T.cellAt(terrain,x,y);
+     window.__worldview=()=>worldView();
+     // A renderer that answers like the real one and draws nothing, so the
+     // harness can run the whole 3D frame path - the overlay, the chips, the
+     // minimap on its own canvas - on a machine with no graphics card.
+     window.__fake3d=(on)=>{
+       if(!on){ viewMode='top'; gfx3=null;
+         cv.style.display='block';
+         if(glCv) glCv.style.display='none';
+         if(ovCv) ovCv.style.display='none';
+         resize(); return false; }
+       gfx3={ resize(){}, dispose(){},
+         frame(){ if(on==='break') throw new TypeError("Cannot read properties of undefined (reading 'lvl')"); },
+         screenToWorld:(px,py)=>({x:(px-cam.x)/cam.s,y:(py-cam.y)/cam.s}),
+         worldToScreen:(x,y)=>({x:x*cam.s+cam.x,y:y*cam.s+cam.y,behind:false}) };
+       viewMode='3d';
+       cv.style.display='none';
+       if(glCv) glCv.style.display='block';
+       if(ovCv) ovCv.style.display='block';
+       resize(); return true;
+     };
+     window.__terrain=()=>terrain;
      window.__name=(x,y)=>groundName(x,y);
      window.__los=(x0,y0,x1,y1,e)=>T.sightClear(terrain,x0,y0,x1,y1,e);
      window.__mob=(k)=>mobilityOf(UNITS[k]);
@@ -5723,6 +6104,18 @@ try{ window.__lvl=(t,n)=>{ lvl[t]=n; buildPalette(); };
        const b=buildings[n]; collapse(b); return {x:b.x,y:b.y,w:b.w,h:b.h}; };
      window.__aBuilding=()=>{ for(const b of buildings) if(!b.dead&&!b.bunker) return {x:b.x,y:b.y}; return null; };
      window.__aTree=()=>{ for(const t of trees) if(!t.dead) return {x:t.x,y:t.y,s:t.s}; return null; };
+     window.__roads=()=>({ms:roadMs,routes:routes.length,towns:towns.length,
+       wetRoad:(()=>{ let n=0; for(let i=0;i<tGrid.length;i++) if((tGrid[i]&ROAD)&&(tGrid[i]&(WATER|FORD))) n++; return n; })(),
+       cells:(()=>{ let n=0; for(let i=0;i<tGrid.length;i++) if(tGrid[i]&ROAD) n++; return n; })(),
+       crossings:routes.reduce((n,r)=>n+r.crossings.length,0),
+       connected:allConnected([].concat(castles.map(c=>({x:c.x,y:c.y})),
+         towns.map(t=>({x:t.x,y:t.y})),bases.map(b=>({x:b.x,y:b.y}))),routes)});
+     window.__wet=(x,y)=>moistureAt(x,y);
+     window.__routes=()=>routes.map(r=>({from:r.from,to:r.to,
+       x0:Math.round(r.pts[0][0]),x1:Math.round(r.pts[r.pts.length-1][0]),
+       minx:Math.round(Math.min(...r.pts.map(q=>q[0]))),
+       maxx:Math.round(Math.max(...r.pts.map(q=>q[0]))),n:r.pts.length}));
+     window.__river=(y)=>riverXAt(y);
      window.__land=()=>{ let fc=0; for(let i=0;i<tGrid.length;i++) if(tGrid[i]&FIELD) fc++;
        const kinds={}; for(const p of props) kinds[p.kind]=(kinds[p.kind]||0)+1;
        const ft={}; for(const f of feats) ft[f.type]=(ft[f.type]||0)+1;
