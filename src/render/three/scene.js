@@ -84,7 +84,7 @@ export function createScene({ canvas, view }) {
 
   function buildWorld(v) {
     clearWorld();
-    const built = buildTerrain(v.terrain, v.pal);
+    const built = buildTerrain(v.terrain, v.pal, v.landuse);
     scene.add(built.mesh);
     const water = buildWater(v.terrain, built.waterY);
     scene.add(water);

@@ -2,16 +2,22 @@
 //
 // Every man and every vehicle on the field is one instance of a shared mesh, so
 // five hundred soldiers cost a handful of draw calls rather than five hundred.
-// The shapes are built here in code — a rifleman is a body and a head, a tank
-// is a hull, a turret and a barrel — which is the same bargain the rest of this
-// game makes: no model files, no asset pipeline, and the turret traverses
-// because the simulation already knows where it is pointing.
+// The shapes are built here in code — the same bargain the rest of this game
+// makes: no model files, no asset pipeline, and the turret traverses because
+// the simulation already knows where it is pointing.
+//
+// Nothing is painted in its nation's colour. Armies wear field grey and khaki
+// and a tank is olive drab; what tells you whose it is at a glance is a helmet
+// and a small pennant on the hull, which is roughly how it worked. That reads
+// as an army rather than as two sets of coloured counters, and it still answers
+// the only question that matters in a hurry — whose is that?
 import * as THREE from 'three';
 import { mergeGeometries } from 'three/examples/jsm/utils/BufferGeometryUtils.js';
 import { groundY } from './terrainMesh.js';
 
 const M = new THREE.Matrix4();
 const Q = new THREE.Quaternion();
+const E = new THREE.Euler();
 const P = new THREE.Vector3();
 const S = new THREE.Vector3();
 const C = new THREE.Color();
@@ -21,13 +27,30 @@ const MAX_MEN = 3200;
 const MAX_VEH = 520;
 const MAX_RING = 260;
 
-function put(mesh, i, x, y, z, rot, sx, sy, sz) {
-  Q.setFromAxisAngle(UP, rot);
+// What each side wears, and what it paints its armour. Muted on purpose: the
+// bright colour is saved for the one part of a unit that carries recognition.
+const SKIN = {
+  blue: { cloth: [0.29, 0.33, 0.4], armour: [0.27, 0.32, 0.3], mark: [0.36, 0.56, 0.84] },
+  red: { cloth: [0.36, 0.32, 0.25], armour: [0.32, 0.3, 0.23], mark: [0.74, 0.3, 0.22] },
+};
+
+function put(mesh, i, x, y, z, rot, sx, sy, sz, pitch) {
+  if (pitch) {
+    E.set(0, rot, pitch, 'YZX');
+    Q.setFromEuler(E);
+  } else {
+    Q.setFromAxisAngle(UP, rot);
+  }
   P.set(x, y, z);
   S.set(sx, sy, sz);
   M.compose(P, Q, S);
   mesh.setMatrixAt(i, M);
 }
+
+const paint = (mesh, i, c) => {
+  C.setRGB(c[0], c[1], c[2]);
+  mesh.setColorAt(i, C);
+};
 
 function instanced(geo, n, scene, opts) {
   const mesh = new THREE.InstancedMesh(
@@ -44,38 +67,63 @@ function instanced(geo, n, scene, opts) {
   return mesh;
 }
 
-// A man: a body, and a head above it. One geometry, so one instance each.
-//
-// Built bigger than life, on purpose. A rifleman is two paces across and the
-// map is five kilometres wide, so at the zoom this game is actually played at a
-// man drawn to scale is one pixel. The flat renderer already makes the same
-// bargain with its icons: legible beats accurate.
+// A man, built bigger than life on purpose: a rifleman is two paces across and
+// the map is five kilometres wide, so drawn true to size he is one pixel at the
+// zoom this game is played at. Legible beats accurate — the flat renderer makes
+// exactly the same bargain with its icons.
 const MAN = 2.3;
-function figureGeometry() {
-  const body = new THREE.BoxGeometry(4.4 * MAN, 7.2 * MAN, 3 * MAN);
-  body.translate(0, 3.6 * MAN, 0);
-  const head = new THREE.SphereGeometry(1.7 * MAN, 6, 5);
-  head.translate(0, 8.6 * MAN, 0);
-  return mergeGeometries([body, head]) || body;
+
+/** Legs, and a coat that widens at the shoulder. */
+function bodyGeometry() {
+  const legs = new THREE.CylinderGeometry(1.5 * MAN, 1.7 * MAN, 3.4 * MAN, 5);
+  legs.translate(0, 1.7 * MAN, 0);
+  const coat = new THREE.CylinderGeometry(2.3 * MAN, 1.8 * MAN, 4.2 * MAN, 6);
+  coat.translate(0, 5.4 * MAN, 0);
+  return mergeGeometries([legs, coat]) || coat;
 }
 
+/** A helmet: the one part that says whose army he is in. */
+function helmetGeometry() {
+  const dome = new THREE.SphereGeometry(1.9 * MAN, 7, 4, 0, Math.PI * 2, 0, Math.PI * 0.62);
+  dome.translate(0, 7.9 * MAN, 0);
+  return dome;
+}
+
+// A four-sided cylinder is a box that can taper, which is what makes a hull
+// read as armour with sloped plate rather than as a crate.
+const slabGeometry = (top, bottom) => {
+  const g = new THREE.CylinderGeometry(top, bottom, 1, 4);
+  g.rotateY(Math.PI / 4);
+  g.translate(0, 0.5, 0);
+  return g;
+};
+
 export function buildUnits(scene) {
-  const men = instanced(figureGeometry(), MAX_MEN, scene);
+  const men = instanced(bodyGeometry(), MAX_MEN, scene);
+  const helms = instanced(helmetGeometry(), MAX_MEN, scene);
 
-  const hullGeo = new THREE.BoxGeometry(1, 1, 1);
-  hullGeo.translate(0, 0.5, 0);
-  const hulls = instanced(hullGeo, MAX_VEH, scene);
+  const hulls = instanced(slabGeometry(0.38, 0.5), MAX_VEH, scene);
+  const turrets = instanced(slabGeometry(0.34, 0.5), MAX_VEH, scene);
 
-  const turretGeo = new THREE.BoxGeometry(1, 1, 1);
-  turretGeo.translate(0, 0.5, 0);
-  const turrets = instanced(turretGeo, MAX_VEH, scene);
+  // Tracks: two dark runs down the sides, which is most of what makes a shape
+  // read as tracked rather than as a box on wheels.
+  const trackGeo = new THREE.BoxGeometry(1, 1, 1);
+  trackGeo.translate(0, 0.5, 0);
+  const tracksL = instanced(trackGeo, MAX_VEH, scene, { color: 0x2a2a26 });
+  const tracksR = instanced(trackGeo, MAX_VEH, scene, { color: 0x2a2a26 });
 
   // The barrel points down +X before it is turned, so the traverse the
   // simulation already tracks is the rotation applied here.
-  const barrelGeo = new THREE.CylinderGeometry(0.5, 0.5, 1, 6);
+  const barrelGeo = new THREE.CylinderGeometry(0.42, 0.5, 1, 6);
   barrelGeo.rotateZ(Math.PI / 2);
   barrelGeo.translate(0.5, 0, 0);
-  const barrels = instanced(barrelGeo, MAX_VEH, scene);
+  const barrels = instanced(barrelGeo, MAX_VEH, scene, { color: 0x22221f });
+
+  // A pennant on the hull, so you can tell whose armour that is without
+  // painting the whole tank in a nation's colour.
+  const markGeo = new THREE.BoxGeometry(1, 1, 1);
+  markGeo.translate(0, 0.5, 0);
+  const marks = instanced(markGeo, MAX_VEH, scene);
 
   const rotorGeo = new THREE.CylinderGeometry(1, 1, 0.12, 12);
   const rotors = instanced(rotorGeo, 80, scene, {
@@ -97,21 +145,17 @@ export function buildUnits(scene) {
   const shots = instanced(shotGeo, 700, scene, { color: 0xffd9a0 });
   shots.castShadow = false;
 
-  const all = [men, hulls, turrets, barrels, rotors, rings, shots];
+  const all = [men, helms, hulls, turrets, tracksL, tracksR, barrels, marks, rotors, rings, shots];
 
   return {
     /** Lay the armies out for this frame. */
     update(v, camDist) {
       const t = v.terrain;
-      // A rifleman is two paces across and the battlefield is five kilometres
-      // wide: true to size he is one pixel when the whole map is on screen,
-      // which is the zoom a commander spends most of a battle at. So men grow
-      // as the camera pulls back. It is the same bargain the flat renderer
-      // makes with its icons, for the same reason: a formation you cannot see
-      // is a formation you cannot command.
+      const soldiers = v.soldiers || [];
+      // Men grow as the camera pulls back, or a formation is a smudge at the
+      // zoom a commander actually plays at.
       const far = camDist ? Math.min(3.4, Math.max(1, camDist / 1000)) : 1;
       const farV = Math.min(1.9, far);
-      const soldiers = v.soldiers || [];
       let nm = 0;
       let nv = 0;
       let nr = 0;
@@ -123,31 +167,26 @@ export function buildUnits(scene) {
         const sq = s.sq;
         if (!v.showsTeam(sq.team) || !sq.seen) continue; // fog of war, same rule as the map
         const ut = sq.t;
-        const blue = sq.team === 'blue';
+        const skin = SKIN[sq.team] || SKIN.blue;
         const gy = groundY(t, s.x, s.y);
 
         if (ut.air) {
           if (nv >= MAX_VEH) continue;
           const fly = gy + 96;
-          put(hulls, nv, s.x, fly, s.y, -s.hull, 26, 8, 10);
-          C.setRGB(blue ? 0.26 : 0.5, blue ? 0.36 : 0.22, blue ? 0.54 : 0.18);
-          hulls.setColorAt(nv, C);
-          put(turrets, nv, s.x, fly + 8, s.y, -s.hull, 12, 6, 8);
-          turrets.setColorAt(nv, C);
-          put(
-            barrels,
-            nv,
-            s.x - Math.cos(s.hull) * 13,
-            fly + 3,
-            s.y - Math.sin(s.hull) * 13,
-            -s.hull,
-            16,
-            2,
-            2,
-          );
-          barrels.setColorAt(nv, C);
+          put(hulls, nv, s.x, fly, s.y, -s.hull, 30, 9, 11);
+          paint(hulls, nv, skin.armour);
+          put(turrets, nv, s.x, fly + 9, s.y, -s.hull, 13, 6, 9);
+          paint(turrets, nv, skin.armour);
+          // a tail boom, borrowed from the barrel mesh
+          const cs0 = Math.cos(s.hull);
+          const sn0 = Math.sin(s.hull);
+          put(barrels, nv, s.x - cs0 * 16, fly + 4, s.y - sn0 * 16, -s.hull, 20, 2.4, 2.4);
+          put(tracksL, nv, s.x, fly - 4, s.y, -s.hull, 22, 2, 3); // skids
+          put(tracksR, nv, s.x, fly - 4, s.y, -s.hull + 0.002, 22, 2, 3);
+          put(marks, nv, s.x, fly + 15, s.y, -s.hull, 7, 2, 3);
+          paint(marks, nv, skin.mark);
           if (nrot < 80) {
-            put(rotors, nrot, s.x, fly + 13, s.y, v.clock * 22, 30, 1, 30);
+            put(rotors, nrot, s.x, fly + 15, s.y, v.clock * 22, 32, 1, 32);
             nrot++;
           }
           nv++;
@@ -156,41 +195,54 @@ export function buildUnits(scene) {
 
         if (ut.vehicle || ut.kind === 'siege') {
           if (nv >= MAX_VEH) continue;
-          const big = ut.kind === 'siege';
-          const V = 1.35 * farV; // the same bargain, less of it
-          const len = (big ? 26 : 34) * V;
-          const wide = (big ? 16 : 19) * V;
-          const tall = (big ? 8 : 11) * V;
-          put(hulls, nv, s.x, gy, s.y, -s.hull, len, tall, wide);
-          C.setRGB(blue ? 0.22 : 0.42, blue ? 0.31 : 0.2, blue ? 0.46 : 0.16);
-          hulls.setColorAt(nv, C);
-          put(
-            turrets,
-            nv,
-            s.x,
-            gy + tall,
-            s.y,
-            -s.turret,
-            (big ? 12 : 17) * V,
-            7 * V,
-            (big ? 12 : 15) * V,
-          );
-          turrets.setColorAt(nv, C);
-          // Recoil: the barrel is driven straight off the simulation's own kick.
+          const gun = ut.kind === 'siege';
+          const V = 1.35 * farV;
+          const len = (gun ? 26 : 34) * V;
+          const wide = (gun ? 16 : 19) * V;
+          const tall = (gun ? 7 : 10) * V;
+          const cs = Math.cos(s.hull);
+          const sn = Math.sin(s.hull);
+
+          put(hulls, nv, s.x, gy + tall * 0.34, s.y, -s.hull, len, tall, wide);
+          paint(hulls, nv, skin.armour);
+
+          // Tracks sit outboard of the hull and lower, and they are dark.
+          const off = wide * 0.5;
+          put(tracksL, nv, s.x + sn * off, gy, s.y - cs * off, -s.hull, len * 1.02, tall * 0.5, wide * 0.24);
+          put(tracksR, nv, s.x - sn * off, gy, s.y + cs * off, -s.hull, len * 1.02, tall * 0.5, wide * 0.24);
+
+          const turretY = gy + tall * 1.34;
+          put(turrets, nv, s.x, turretY, s.y, -s.turret, (gun ? 12 : 17) * V, 6 * V, (gun ? 12 : 15) * V);
+          paint(turrets, nv, skin.armour);
+
+          // Recoil comes straight off the simulation's own kick, and a gun
+          // carries its barrel up rather than level.
           const back = (s.rec || 0) * 3;
-          const bl = (big ? 20 : 24) * V - back;
-          put(barrels, nv, s.x, gy + tall + 3.5 * V, s.y, -s.turret, bl, 2.4 * V, 2.4 * V);
-          barrels.setColorAt(nv, C);
+          const bl = (gun ? 24 : 26) * V - back;
+          put(barrels, nv, s.x, turretY + 3 * V, s.y, -s.turret, bl, 2.3 * V, 2.3 * V, gun ? -0.42 : 0);
+
+          put(
+            marks,
+            nv,
+            s.x - cs * len * 0.3,
+            turretY + 5.5 * V,
+            s.y - sn * len * 0.3,
+            -s.hull,
+            7 * V,
+            2 * V,
+            3.4 * V,
+          );
+          paint(marks, nv, skin.mark);
           nv++;
           continue;
         }
 
         if (nm >= MAX_MEN) continue;
-        // A man leans into his stride, which is enough to read as movement at
-        // the zoom this game is played at.
-        put(men, nm, s.x, gy, s.y, -s.ang, far, far * (s.moved ? 0.96 : 1), far);
-        C.setRGB(blue ? 0.36 : 0.69, blue ? 0.56 : 0.27, blue ? 0.82 : 0.22);
-        men.setColorAt(nm, C);
+        const lean = s.moved ? 0.96 : 1;
+        put(men, nm, s.x, gy, s.y, -s.ang, far, far * lean, far);
+        paint(men, nm, skin.cloth);
+        put(helms, nm, s.x, gy, s.y, -s.ang, far, far * lean, far);
+        paint(helms, nm, skin.mark);
         nm++;
       }
 
@@ -224,12 +276,16 @@ export function buildUnits(scene) {
         );
         ns++;
       }
-      shots.count = ns;
 
+      shots.count = ns;
       men.count = nm;
+      helms.count = nm;
       hulls.count = nv;
       turrets.count = nv;
+      tracksL.count = nv;
+      tracksR.count = nv;
       barrels.count = nv;
+      marks.count = nv;
       rotors.count = nrot;
       rings.count = nr;
       for (const m of all) {

@@ -3808,7 +3808,7 @@ function stateHash(){
 // this would put the two machines in a match on different courses.
 function worldView(){
   return {
-    terrain, cam, pal:MAPS[mapType].pal, worldId, treesDown, ruins:ruinsN,
+    terrain, cam, pal:MAPS[mapType].pal, landuse, worldId, treesDown, ruins:ruinsN,
     squads, soldiers, buildings, trees, walls, castles, bases, shots, parts,
     selected, phase, clock, tod, sun, dayLight, night,
     viewTeam:viewTeam(), showsTeam:visible
