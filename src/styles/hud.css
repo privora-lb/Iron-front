@@ -1,9 +1,12 @@
 /* Iron Front — top bar, unit deck, buttons, cards */
+/* The screen belongs to the battlefield. The status strip sits at the top of
+   it and the command deck at the foot, with everything between them left alone
+   — which is where the fighting is, and where a commander is looking. */
 #hud {
   position: absolute;
-  top: 0;
-  left: 0;
-  right: 0;
+  inset: 0;
+  display: flex;
+  flex-direction: column;
   z-index: 4;
   pointer-events: none;
 }
@@ -105,15 +108,15 @@
 }
 .spd button,
 .sys button {
-  font-size: 12px;
-  padding: 4px 8px;
-  min-width: 32px;
-  min-height: 28px;
+  font-size: 13px;
+  padding: 6px 10px;
+  min-width: 40px;
+  min-height: 34px;
   line-height: 1;
 }
 .sys button {
-  font-size: 14px;
-  min-width: 36px;
+  font-size: 15px;
+  min-width: 44px;
 }
 /* The menu is the one people actually hunt for, so it reads as the main one. */
 #menuBtn {
@@ -135,17 +138,28 @@
   #top {
     gap: 8px;
   }
+  /* Forty-four points is the smallest thing a thumb hits reliably. */
+  #deck button {
+    min-height: 44px;
+    padding: 9px 13px;
+    font-size: 13.5px;
+  }
+  #deck .card {
+    min-height: 52px;
+  }
 }
 #deck {
   position: relative;
   z-index: 3;
-  background: linear-gradient(180deg, rgba(28, 25, 19, 0.93), rgba(20, 18, 14, 0.72));
-  border-bottom: 1px solid var(--line);
-  backdrop-filter: blur(2px);
-  padding: 3px 6px 4px;
+  margin-top: auto; /* the foot of the screen, whatever the screen is */
+  background: linear-gradient(0deg, rgba(26, 23, 18, 0.96), rgba(20, 18, 14, 0.8));
+  border-top: 1px solid var(--line);
+  backdrop-filter: blur(3px);
+  padding: 4px 6px;
+  padding-bottom: calc(4px + env(safe-area-inset-bottom));
   display: flex;
   flex-direction: column;
-  gap: 2px;
+  gap: 3px;
   pointer-events: auto;
 }
 .row {
@@ -160,15 +174,19 @@
 .row::-webkit-scrollbar {
   display: none;
 }
+/* Every one of these is meant to be hit in a hurry, often with a thumb, often
+   while something is on fire. Small, tight buttons are the single most common
+   way a game like this is unpleasant to play. */
 button {
   font-family: 'Barlow Condensed', sans-serif;
-  font-size: 12px;
+  font-size: 12.5px;
   letter-spacing: 0.04em;
   color: var(--parch);
   background: linear-gradient(180deg, var(--stone-2), #1a1813);
   border: 1px solid var(--line);
-  border-radius: 2px;
-  padding: 4px 7px;
+  border-radius: 3px;
+  padding: 7px 11px;
+  min-height: 34px;
   cursor: pointer;
   text-transform: uppercase;
   white-space: nowrap;
@@ -180,6 +198,7 @@ button:hover {
 }
 button:active {
   transform: translateY(1px);
+  background: linear-gradient(180deg, #4a3f14, #2a230c);
 }
 button.on {
   background: linear-gradient(180deg, #5a4a15, #3a2f0d);
@@ -191,14 +210,11 @@ button:focus-visible {
   outline-offset: 2px;
 }
 .card {
-  width: 114px;
+  width: 92px;
   text-align: left;
-  padding: 5px 7px;
-  line-height: 1.15;
+  padding: 6px 8px;
+  line-height: 1.2;
   text-transform: none;
-}
-.card {
-  width: 76px;
 }
 .cardtop {
   display: flex;
@@ -206,15 +222,15 @@ button:focus-visible {
   gap: 5px;
 }
 .card .ico {
-  width: 17px;
-  height: 17px;
+  width: 20px;
+  height: 20px;
   flex: 0 0 auto;
   opacity: 0.92;
 }
 .card b {
   display: block;
   font-family: 'Cinzel', serif;
-  font-size: 9px;
+  font-size: 10px;
   text-transform: none;
   line-height: 1;
 }
@@ -242,7 +258,7 @@ button.locked {
   font-style: normal;
 }
 .leg {
-  min-width: 34px;
+  min-width: 40px;
   text-align: center;
   font-family: 'Cinzel', serif;
 }

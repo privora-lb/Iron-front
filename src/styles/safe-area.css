@@ -17,9 +17,11 @@
   padding-left: calc(6px + var(--inset-left));
   padding-right: calc(6px + var(--inset-right));
 }
+/* Clear of the notch AND of the command deck, whose height the engine measures
+   and publishes as --deck-h every time a row appears or goes. */
 #zoom {
   right: calc(7px + var(--inset-right));
-  bottom: calc(7px + var(--inset-bottom));
+  bottom: calc(var(--deck-h, 120px) + 10px + var(--inset-bottom));
 }
 #toast {
   top: calc(10px + var(--inset-top));

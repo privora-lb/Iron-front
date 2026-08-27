@@ -50,4 +50,14 @@ export default [
     },
     rules: { 'no-console': 'off' },
   },
+  {
+    // ...except the probes that import the game's own ES modules directly,
+    // which are modules themselves.
+    files: ['test/**/*.mjs'],
+    languageOptions: {
+      sourceType: 'module',
+      globals: { ...globals.node },
+    },
+    rules: { 'no-console': 'off' },
+  },
 ];

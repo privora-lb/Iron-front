@@ -34,7 +34,8 @@
     "fonts": "node scripts/vendor-fonts.mjs",
     "test:crowd": "npm run build:test && node test/crowdrun.js",
     "test:stuck": "npm run build:test && node test/stuckrun.js --map city --buy tank,apc,howitzer,mlrs --count 30 --checks 5,120,600",
-    "shot": "npm run build:test && node test/shot.js shot.png"
+    "shot": "npm run build:test && node test/shot.js shot.png",
+    "browser": "node test/browserrun.mjs"
   },
   "dependencies": {
     "@capacitor/android": "^7.0.0",
@@ -42,7 +43,8 @@
     "@capacitor/core": "^7.0.0",
     "@capacitor/haptics": "^7.0.0",
     "@capacitor/ios": "^7.0.0",
-    "@capacitor/status-bar": "^7.0.0"
+    "@capacitor/status-bar": "^7.0.0",
+    "three": "^0.185.1"
   },
   "devDependencies": {
     "@capacitor/cli": "^7.0.0",
