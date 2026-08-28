@@ -51,3 +51,24 @@ jobs:
           name: iron-front-web
           path: dist/
           retention-days: 14
+
+      # Render is connected to this repo by public URL rather than through the
+      # GitHub App, so it gets no webhook and never hears about a push. Rather
+      # than fix that, deploy from here — which is better anyway: every step
+      # above has to pass first, so a build that fails its own checks can no
+      # longer reach the live site.
+      #
+      # Needs one repository secret, RENDER_DEPLOY_HOOK, holding the deploy hook
+      # URL from the service's Settings page. Without it this step says so and
+      # does nothing, so a fork or a pull request cannot fire it.
+      - name: Deploy to Render
+        if: github.ref == 'refs/heads/main' && github.event_name != 'pull_request'
+        env:
+          HOOK: ${{ secrets.RENDER_DEPLOY_HOOK }}
+        run: |
+          if [ -z "$HOOK" ]; then
+            echo 'No RENDER_DEPLOY_HOOK secret set - nothing deployed.' >> "$GITHUB_STEP_SUMMARY"
+            exit 0
+          fi
+          curl -fsS "$HOOK" > /dev/null
+          echo 'Deploy triggered on Render, after every check passed.' >> "$GITHUB_STEP_SUMMARY"
