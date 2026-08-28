@@ -18,6 +18,17 @@
   font-size: 17px;
   background: rgba(30, 27, 20, 0.9);
 }
+/* The compass. It only means anything on a field you can walk round, so the
+   engine shows it with the 3D view and hides it with the map. */
+#zlook {
+  display: none;
+}
+#zlook i {
+  display: block;
+  font-style: normal;
+  line-height: 1;
+  transition: transform 0.12s linear;
+}
 #toast {
   position: absolute;
   left: 50%;

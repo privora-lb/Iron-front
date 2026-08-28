@@ -26,9 +26,14 @@ const UP = new THREE.Vector3(0, 1, 0);
 const MAX_MEN = 3200;
 const MAX_VEH = 520;
 const MAX_RING = 260;
+const MAX_DOWN = 260; // the engine keeps no more dead on the field than this
 
 // What each side wears, and what it paints its armour. Muted on purpose: the
 // bright colour is saved for the one part of a unit that carries recognition.
+// A man on the ground is not the colour he was standing up: field grey against
+// churned earth, with the light off him.
+const DEAD = [0.19, 0.19, 0.17];
+
 const SKIN = {
   blue: { cloth: [0.29, 0.33, 0.4], armour: [0.27, 0.32, 0.3], mark: [0.36, 0.56, 0.84] },
   red: { cloth: [0.36, 0.32, 0.25], armour: [0.32, 0.3, 0.23], mark: [0.74, 0.3, 0.22] },
@@ -145,7 +150,19 @@ export function buildUnits(scene) {
   const shots = instanced(shotGeo, 700, scene, { color: 0xffd9a0 });
   shots.castShadow = false;
 
-  const all = [men, helms, hulls, turrets, tracksL, tracksR, barrels, marks, rotors, rings, shots];
+  // The dead. The map has always laid a man down where he fell and left a
+  // burnt-out hull where a tank brewed up; in three dimensions they simply
+  // vanished, which made a firefight look like men walking off it. Same list,
+  // same positions, same handful of seconds — they are the engine's, not this
+  // renderer's invention.
+  const fallen = instanced(bodyGeometry(), MAX_DOWN, scene);
+  const fallenHelms = instanced(helmetGeometry(), MAX_DOWN, scene);
+  const wrecks = instanced(slabGeometry(0.42, 0.5), MAX_DOWN, scene, { color: 0x24211b });
+
+  const all = [
+    men, helms, hulls, turrets, tracksL, tracksR, barrels, marks, rotors, rings, shots,
+    fallen, fallenHelms, wrecks,
+  ];
 
   return {
     /** Lay the armies out for this frame. */
@@ -245,6 +262,42 @@ export function buildUnits(scene) {
         paint(helms, nm, skin.mark);
         nm++;
       }
+
+      // The dead, going down and settling. `t` runs from its full span to
+      // nothing, so `k` is how far through the fall he is: he tips over in the
+      // first third of it and then sinks away.
+      const down = v.bodies || [];
+      let nd = 0;
+      let nw = 0;
+      for (let i = 0; i < down.length; i++) {
+        const b = down[i];
+        const left = b.max ? b.t / b.max : 0;
+        if (left <= 0) continue;
+        const k = 1 - left;
+        const gone = left < 0.22 ? left / 0.22 : 1; // the last moment shrinks away
+        if (b.veh) {
+          if (nw >= MAX_DOWN) continue;
+          const gy = groundY(t, b.x, b.y);
+          const settle = 1 - k * 0.3;
+          put(wrecks, nw, b.x, gy, b.y, -(b.a + b.spin * k), 30 * gone, 8 * settle * gone, 17 * gone);
+          nw++;
+          continue;
+        }
+        if (nd >= MAX_DOWN) continue;
+        const gy = groundY(t, b.x, b.y);
+        // Tipping: upright at the instant he is hit, flat a third of a second
+        // later, and the spin the map gives him carries his bearing round.
+        const tip = Math.min(1, k * 3.2) * 1.45;
+        const s = far * gone;
+        put(fallen, nd, b.x, gy, b.y, -(b.a + b.spin * k), s, s, s, tip);
+        paint(fallen, nd, DEAD);
+        put(fallenHelms, nd, b.x, gy, b.y, -(b.a + b.spin * k), s, s, s, tip);
+        paint(fallenHelms, nd, (SKIN[b.team] || SKIN.blue).mark);
+        nd++;
+      }
+      fallen.count = nd;
+      fallenHelms.count = nd;
+      wrecks.count = nw;
 
       // A ring under everything the player has selected.
       const sel = v.selected || [];

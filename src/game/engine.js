@@ -237,6 +237,11 @@ let stats={blue:0,red:0};
 let hot={stage:'orders',team:'blue',t:45,round:1};
 let cam={s:1,x:0,y:0};
 let ground=null,canopy=null,canopyCtx=null,decal=null,decalCtx=null;
+// How many marks have been painted into the decal sheet. The 3D ground carries
+// that whole canvas as a texture and cannot afford to hand two and a half
+// megapixels to the graphics card sixty times a second; this is how it knows
+// there is anything new to send. Cosmetic — no rule reads it back.
+let decalV=0;
 let landuse=null;                       // the field patchwork, see src/world/landuse.js
 let mini={x:0,y:0,w:0,h:0,s:1,cx:90,cy:90,r:80};
 let quality=1,qualityLock=false,frameMs=16,clock=0;
@@ -683,6 +688,7 @@ function fellTree(t, ang) {
 // stops costing anything to draw.
 function layTrunk(t) {
   if (!decalCtx) return;
+  decalV++;
   const a = t.fa, L = t.s * 2.1;
   decalCtx.save();
   decalCtx.translate(t.x, t.y); decalCtx.rotate(a);
@@ -751,6 +757,7 @@ function flattenCrop(x, y) {
   if (!(tGrid[i] & FIELD)) return;
   tGrid[i] &= ~FIELD;
   if (!decalCtx) return;
+  decalV++;
   decalCtx.fillStyle = 'rgba(92,80,48,.5)';
   decalCtx.beginPath();
   decalCtx.ellipse((i % TW) * TG + TG / 2, ((i / TW) | 0) * TG + TG / 2, TG * .8, TG * .62, 0, 0, 6.28);
@@ -871,6 +878,7 @@ function killCivsNear(x, y, r) {
     c.alive = false;
     burst(c.x, c.y, 3, 'spark');
     if (decalCtx) {
+      decalV++;
       decalCtx.fillStyle = 'rgba(92,26,20,.5)';
       decalCtx.beginPath();
       decalCtx.ellipse(c.x, c.y, vr(5, 8), vr(3, 6), vr(0, 3), 0, 6.28);
@@ -1565,6 +1573,7 @@ function bakeTerrain(){
   ground=g0; canopy=cn; canopyCtx=c; makeDecal();
 }
 function makeDecal(){
+  decalV++;
   decal=document.createElement('canvas');
   decal.width=Math.ceil(W*BAKE); decal.height=Math.ceil(H*BAKE);
   decalCtx=decal.getContext('2d');
@@ -1823,6 +1832,7 @@ function burst(x,y,n,type){
 }
 function bloodMark(x,y,team){
   if(!decalCtx) return;
+  decalV++;
   decalCtx.fillStyle=team==='blue'?'rgba(28,42,72,.5)':'rgba(74,22,16,.5)';
   decalCtx.beginPath(); decalCtx.ellipse(x,y,vr(3,5),vr(2,3.4),vr(0,3.14),0,6.28); decalCtx.fill();
   decalCtx.fillStyle='rgba(58,16,12,.3)';
@@ -1830,6 +1840,7 @@ function bloodMark(x,y,team){
 }
 function paintMud(gx,gy,lvl){
   if(!decalCtx) return;
+  decalV++;
   const x=gx*TG+TG/2,y=gy*TG+TG/2;
   decalCtx.fillStyle=lvl===1?'rgba(52,44,30,.30)':'rgba(38,31,20,.42)';
   decalCtx.beginPath(); decalCtx.ellipse(x+vr(-4,4),y+vr(-4,4),vr(11,16),vr(8,12),vr(0,3),0,6.28);
@@ -1843,6 +1854,7 @@ function stepChurn(dt){
     const j=gi(s.x,s.y);
     if(tGrid[j]&(WATER|BUILD)) continue;
     if(s.sq.t.vehicle&&decalCtx&&!(tGrid[j]&WATER)){        // tracks and tyre ruts
+      decalV++;
       const a=s.hull,px=-Math.sin(a),py=Math.cos(a);
       decalCtx.fillStyle='rgba(30,26,18,.24)';
       for(const o of [-4.5,4.5]){
@@ -1908,6 +1920,7 @@ function collapse(b){
 // The ruin, painted into the ground layer.
 function paintRuin(b){
   if(decalCtx){                                                   // paint the ruin into the ground
+    decalV++;
     decalCtx.fillStyle='rgba(40,37,31,.65)';
     decalCtx.fillRect(b.x-b.w/2,b.y-b.h/2,b.w,b.h);
     decalCtx.fillStyle='rgba(96,90,78,.55)';
@@ -1924,6 +1937,7 @@ function paintRuin(b){
 const stampLine=(x,y,ang,len,halfW,flag)=>T.stampLine(terrain,x,y,ang,len,halfW,flag);
 function paintWire(x,y,ang,len){
   if(!decalCtx) return;
+  decalV++;
   const cs=Math.cos(ang),sn=Math.sin(ang);
   decalCtx.strokeStyle='rgba(38,34,26,.85)'; decalCtx.lineWidth=2.2;
   for(const off of [-5,5]){
@@ -1943,6 +1957,7 @@ function paintWire(x,y,ang,len){
 }
 function paintTrench(x,y,ang,len){
   if(!decalCtx) return;
+  decalV++;
   const cs=Math.cos(ang),sn=Math.sin(ang);
   const draw=(off,w,col)=>{
     decalCtx.strokeStyle=col; decalCtx.lineWidth=w; decalCtx.lineCap='round';
@@ -2637,10 +2652,11 @@ function hurt(v,a,by){
   v.hp-=a;
   if(v.hp<=0){
     v.alive=false; bloodMark(v.x,v.y,v.sq.team); stats[v.sq.team]++;
-    if(bodies.length<240)                          // he goes down where he stood
+    if(bodies.length<240){                         // he goes down where he stood
       if(v.sq.t.vehicle&&plumes.length<26) plumes.push({x:v.x,y:v.y,t:vr(5,10)});
       bodies.push({x:v.x,y:v.y,a:v.ang,team:v.sq.team,veh:!!v.sq.t.vehicle,
         t:v.sq.t.vehicle?3.4:1.9,max:v.sq.t.vehicle?3.4:1.9,spin:vr(-1.6,1.6)});
+    }
     if(by&&by!==v.sq.team){                      // a kill pays out, and holding pays a little better
       const worth=v.sq.cost/v.sq.initial;
       const pay=clamp(Math.round(worth*6)+4,6,160)*(by===defender?1.4:1);
@@ -3809,8 +3825,13 @@ function stateHash(){
 function worldView(){
   return {
     terrain, cam, pal:MAPS[mapType].pal, landuse, worldId, treesDown, ruins:ruinsN,
-    squads, soldiers, buildings, trees, walls, castles, bases, shots, parts,
+    squads, soldiers, buildings, trees, walls, castles, bases, shots, parts, bodies,
     selected, phase, clock, tod, sun, dayLight, night,
+    // The fog of war, the marks in the ground and the dead: three things the
+    // map has always drawn and the 3D field could not see. eyes is the very
+    // array updateVision() fills each tick, and decal is the engine's own
+    // canvas - references, so there is exactly one of each on this machine.
+    eyes:visionEyes, decal, decalV,
     viewTeam:viewTeam(), showsTeam:visible
   };
 }
@@ -3849,6 +3870,16 @@ async function setView(mode,quiet){
 }
 function paintViewBtn(){
   const b=el('mView'); if(b) b.textContent='View: '+(viewMode==='3d'?'3D':'top-down');
+  const c=el('zlook'); if(c&&c.style) c.style.display=viewMode==='3d'?'block':'none';
+}
+// Where the compass needle is pointing, so the style is only touched when the
+// bearing has actually moved rather than sixty times a second.
+let lookBearing=0;
+function paintCompass(){
+  const b=gfx3?gfx3.bearing():0;
+  if(Math.abs(b-lookBearing)<.01) return;
+  lookBearing=b;
+  const g=el('zlookI'); if(g&&g.style) g.style.transform='rotate('+b+'rad)';
 }
 
 /* ===================== camera ===================== */
@@ -3910,6 +3941,30 @@ const s2w=(px,py)=>(viewMode==='3d'&&gfx3)
   ? gfx3.screenToWorld(px,py,terrain)
   : {x:(px-cam.x)/cam.s,y:(py-cam.y)/cam.s};
 const w2sx=x=>x*cam.s+cam.x, w2sy=y=>y*cam.s+cam.y;
+// Where a point on the battlefield lands on screen. On the map that is a scale
+// and an offset; in three dimensions it is a projection, and once the camera
+// can walk round the field the two stop agreeing - which is what put a
+// selection box round the wrong men.
+function w2s(x,y){
+  if(viewMode==='3d'&&gfx3) return gfx3.worldToScreen(x,y,terrain);
+  return {x:w2sx(x),y:w2sy(y),behind:false};
+}
+// A drag across the screen moves the ground the way the player can see it
+// moving. The map has one bearing and always did; the 3D camera has whichever
+// one the player has turned to, so the delta is rotated into it.
+function panCam(dx,dy){
+  if(viewMode==='3d'&&gfx3){
+    const b=gfx3.bearing(),c=Math.cos(b),n=Math.sin(b);
+    cam.x+=dx*c+dy*n; cam.y+=dy*c-dx*n;
+  } else { cam.x+=dx; cam.y+=dy; }
+}
+// Walking round the field and raising the eye. Both are the renderer's own -
+// the map has no notion of either - so both are refused when there is no 3D
+// battlefield to turn.
+function orbitCam(dYaw,dPitch){
+  if(viewMode!=='3d'||!gfx3) return false;
+  gfx3.orbit(dYaw,dPitch); return true;
+}
 const COL={
   blue:{body:'#5C8FD0',dark:'#27436E',lt:'#BBD7FA',deep:'#16294A',
         uni:'#4A5560',uni2:'#38414A',veh:'#44514C',veh2:'#33403C',skin:'#B9906B'},
@@ -4085,6 +4140,7 @@ function draw3(){
   vx0=fx-rad; vx1=fx+rad; vy0=fy-rad; vy1=fy+rad;
   listen(fx,fy,rad,rad);
   gfx3.frame(worldView());
+  paintCompass();
   if(ovx){
     ovx.setTransform(dpr,0,0,dpr,0,0);
     ovx.clearRect(0,0,w,h);
@@ -4325,7 +4381,7 @@ function draw(){
     if(b.veh){
       ctx.fillStyle='#26241E'; ctx.beginPath(); ctx.roundRect(-11,-6,22,12,2); ctx.fill();
       ctx.fillStyle='rgba(0,0,0,.5)'; ctx.beginPath(); ctx.ellipse(0,0,9,5,0,0,6.28); ctx.fill();
-      if(quality&&R()<.3) burst(b.x,b.y,1,'smoke');
+      if(quality&&Math.random()<.3) burst(b.x,b.y,1,'smoke');
     } else {
       ctx.scale(1,1-k*.35);                          // collapsing
       ctx.fillStyle=c.uni2; ctx.beginPath(); ctx.roundRect(-3.4,-2.2,7,4.4,1.8); ctx.fill();
@@ -4591,9 +4647,9 @@ function draw(){
       ctx.beginPath(); ctx.moveTo(-20,-1); ctx.lineTo(-20+Math.cos(a)*5,-1+Math.sin(a)*5); ctx.stroke();
     }
     ctx.restore();
-    if(quality&&R()<.25){                   // downwash
-      parts.push({x:s.x+rnd(-14,14),y:s.y+rnd(-10,10),vx:rnd(-22,22),vy:rnd(-22,22),
-        t:rnd(.25,.5),r:rnd(2,4),type:'dust'});
+    if(quality&&Math.random()<.25){                   // downwash
+      parts.push({x:s.x+vr(-14,14),y:s.y+vr(-10,10),vx:vr(-22,22),vy:vr(-22,22),
+        t:vr(.25,.5),r:vr(2,4),type:'dust'});
     }
   }
   function drawVehicle(s,c,t){
@@ -4694,11 +4750,11 @@ function draw(){
       ctx.beginPath(); ctx.arc((apc?14:21.5),0,5,0,6.28); ctx.fill();
     }
     ctx.restore();
-    if(hurt&&quality&&R()<.05) burst(s.x,s.y,1,'smoke');
-    if(quality&&s.moved>0&&R()<.09){                  // exhaust as it pulls away
+    if(hurt&&quality&&Math.random()<.05) burst(s.x,s.y,1,'smoke');
+    if(quality&&s.moved>0&&Math.random()<.09){        // exhaust as it pulls away
       const ea=s.hull+Math.PI;
       parts.push({x:s.x+Math.cos(ea)*11,y:s.y+Math.sin(ea)*11,vx:Math.cos(ea)*10,vy:Math.sin(ea)*10-4,
-        t:rnd(.5,1.1),r:rnd(2.5,4.5),type:'smoke'});
+        t:vr(.5,1.1),r:vr(2.5,4.5),type:'smoke'});
     }
   }
   function drawEngine(s,c){
@@ -4749,12 +4805,12 @@ function draw(){
         ctx.beginPath(); ctx.ellipse(a.x,a.y,5,2.6,0,0,6.28); ctx.fill();
         ctx.fillStyle='#2E3128';
         ctx.beginPath(); ctx.ellipse(a.x,a.y-a.arc,4.4,2.8,Math.atan2(dy,dx),0,6.28); ctx.fill();
-        if(quality&&R()<.35) burst(a.x,a.y-a.arc,1,'smoke');
+        if(quality&&Math.random()<.35) burst(a.x,a.y-a.arc,1,'smoke');
       } else {                                              // flat-trajectory round
         ctx.strokeStyle=a.kind==='rocket'?'rgba(255,190,110,.95)':'rgba(255,236,180,.9)';
         ctx.lineWidth=a.kind==='rocket'?3:2.4;
         ctx.beginPath(); ctx.moveTo(a.x,a.y); ctx.lineTo(a.x-dx/L*16,a.y-dy/L*16); ctx.stroke();
-        if(a.kind==='rocket'&&quality&&R()<.6) burst(a.x-dx/L*14,a.y-dy/L*14,1,'smoke');
+        if(a.kind==='rocket'&&quality&&Math.random()<.6) burst(a.x-dx/L*14,a.y-dy/L*14,1,'smoke');
       }
     } else {
       if(quality){ ctx.save(); ctx.globalCompositeOperation='lighter';
@@ -5088,7 +5144,7 @@ function drawCastle(c){
     ctx.fillStyle='#514A40'; ctx.fillRect(x-hw,y-hh,hw*2,hh*2);
     ctx.fillStyle='rgba(24,20,14,.55)';
     for(let i=0;i<44;i++){
-      const px=x+rnd(-hw,hw),py=y+rnd(-hh,hh),r=rnd(5,15);
+      const px=x+vr(-hw,hw),py=y+vr(-hh,hh),r=vr(5,15);
       ctx.beginPath(); ctx.moveTo(px-r,py+r*.5); ctx.lineTo(px,py-r*.6); ctx.lineTo(px+r,py+r*.5); ctx.fill();
     }
     ctx.strokeStyle='rgba(60,54,44,.9)'; ctx.lineWidth=4;
@@ -5579,12 +5635,17 @@ function onDown(e){
   if(e.touches&&e.touches.length===2){
     const a=e.touches[0],b=e.touches[1];
     pinch={d:Math.hypot(a.clientX-b.clientX,a.clientY-b.clientY),
-      x:(a.clientX+b.clientX)/2,y:(a.clientY+b.clientY)/2};
+      x:(a.clientX+b.clientX)/2,y:(a.clientY+b.clientY)/2,
+      a:Math.atan2(b.clientY-a.clientY,b.clientX-a.clientX)};
     ptr.down=false; return;
   }
   const touch=!!e.touches,p=canvasPos(touch?e.touches[0]:e);
+  const held=!touch&&(e.button===2||e.button===1);
   ptr={down:true,moved:false,touch,sx:p.x,sy:p.y,t0:clock,
-    pan:touch||e.button===2||e.button===1,rb:!touch&&e.button===2,lx:p.x,ly:p.y};
+    pan:touch||held,rb:!touch&&e.button===2,lx:p.x,ly:p.y,
+    // Right or middle drag shoves the map flat; on the field it walks the
+    // camera round instead, which is the only way to see behind a ridge.
+    orbit:held&&viewMode==='3d'&&!!gfx3};
   if(building&&!ptr.rb&&!inMini(p.x,p.y)){          // drag out the line of the work
     const w0=s2w(p.x,p.y);
     drawing={x0:w0.x,y0:w0.y,x1:w0.x,y1:w0.y};
@@ -5597,10 +5658,20 @@ function onMove(e){
     const a=e.touches[0],b=e.touches[1];
     const d=Math.hypot(a.clientX-b.clientX,a.clientY-b.clientY);
     const mx=(a.clientX+b.clientX)/2,my=(a.clientY+b.clientY)/2;
-    const r=cv.getBoundingClientRect();
+    const ang=Math.atan2(b.clientY-a.clientY,b.clientX-a.clientX);
+    const r=el('stage').getBoundingClientRect();
     zoomAt(d/pinch.d,mx-r.left,my-r.top);
-    cam.x+=mx-pinch.x; cam.y+=my-pinch.y;
-    pinch={d,x:mx,y:my}; e.preventDefault(); return;
+    // On the field two fingers do what they do in every map on a phone: spread
+    // to close in, twist to turn, slide up and down to raise and lower the eye.
+    // Sliding sideways still pans, and one finger still pans in both axes, so
+    // nothing that worked before has been taken away.
+    if(viewMode==='3d'&&gfx3){
+      let turn=ang-pinch.a;
+      if(turn>Math.PI) turn-=6.283185; else if(turn<-Math.PI) turn+=6.283185;
+      orbitCam(turn,(my-pinch.y)*.004);
+      panCam(mx-pinch.x,0);
+    } else { cam.x+=mx-pinch.x; cam.y+=my-pinch.y; }
+    pinch={d,x:mx,y:my,a:ang}; e.preventDefault(); return;
   }
   if(!ptr.down) return;
   const p=canvasPos(e.touches?e.touches[0]:e);
@@ -5616,7 +5687,8 @@ function onMove(e){
     }
   }
   if(drawing){ const w1=s2w(p.x,p.y); drawing.x1=w1.x; drawing.y1=w1.y; }
-  else if(ptr.moved&&ptr.pan&&!inMini(ptr.sx,ptr.sy)){ cam.x+=p.x-ptr.lx; cam.y+=p.y-ptr.ly; }
+  else if(ptr.moved&&ptr.orbit){ orbitCam((p.x-ptr.lx)*.006,(p.y-ptr.ly)*.005); }
+  else if(ptr.moved&&ptr.pan&&!inMini(ptr.sx,ptr.sy)){ panCam(p.x-ptr.lx,p.y-ptr.ly); }
   else if(box.on){ box.x1=p.x; box.y1=p.y; }
   ptr.lx=p.x; ptr.ly=p.y; e.preventDefault();
 }
@@ -5648,8 +5720,9 @@ function onUp(){
     const y0=Math.min(box.y0,box.y1),y1=Math.max(box.y0,box.y1);
     selected=squads.filter(sq=>{
       if(sq.gone||sq.team!==team||sq.routed) return false;
-      const sx=w2sx(sq.fx),sy=w2sy(sq.fy);
-      return sx>=x0&&sx<=x1&&sy>=y0&&sy<=y1; });
+      const q=w2s(sq.fx,sq.fy);
+      if(q.behind) return false;
+      return q.x>=x0&&q.x<=x1&&q.y>=y0&&q.y<=y1; });
     box.on=false;
     if(selected.length){ clearBuying(); tapLight(); toast(selected.length+' units selected'); }
     return;
@@ -5758,6 +5831,15 @@ document.addEventListener('keydown',e=>{
   if(e.key==='Escape'){
     if(!paused&&(selected.length||placing)){ selected=[]; placing=null; buildPalette(); return; }
     paused?closeMenu():openMenu(); return;
+  }
+  // The camera is not an order. It answers while you are deploying, while you
+  // are watching a side you do not command, and with nothing selected.
+  if(!paused&&viewMode==='3d'&&gfx3){
+    if(e.key==='['){ orbitCam(-.14,0); return; }
+    if(e.key===']'){ orbitCam(.14,0); return; }
+    if(e.key===','){ orbitCam(0,-.07); return; }
+    if(e.key==='.'){ orbitCam(0,.07); return; }
+    if(e.key==='\\'){ gfx3.level(); toast('Squared up to the field'); return; }
   }
   if(phase!=='battle'||paused) return;
   const team=cmdTeam(); if(!team) return;
@@ -5931,6 +6013,15 @@ el('done').onclick=()=>{ if(mode==='hot'&&hot.stage==='orders') endOrders(); };
 el('zin').onclick=()=>zoomAt(1.25);
 el('zout').onclick=()=>zoomAt(.8);
 el('zfit').onclick=fit;
+// The compass says which way the field is turned and puts it straight again.
+// It is the only thing on screen that tells a player the camera CAN be turned,
+// which is why it is a button and not just a key.
+if(el('zlook')) el('zlook').onclick=()=>{
+  if(!gfx3) return;
+  gfx3.level(); lookBearing=0;
+  const g=el('zlookI'); if(g&&g.style) g.style.transform='rotate(0rad)';
+  toast('Squared up to the field');
+};
 function toggleFull(){
   const d=document.documentElement;
   if(!document.fullscreenElement){ if(d.requestFullscreen) d.requestFullscreen().catch(()=>{}); }
@@ -6081,16 +6172,26 @@ try{ window.__lvl=(t,n)=>{ lvl[t]=n; buildPalette(); };
          if(glCv) glCv.style.display='none';
          if(ovCv) ovCv.style.display='none';
          resize(); return false; }
+       // A renderer that answers like the real one and draws nothing. It keeps
+       // a bearing and a pitch because the engine steers those and the tests
+       // read them back to prove a drag turned the camera.
+       let fyaw=0,fpitch=.86;
        gfx3={ resize(){}, dispose(){},
          frame(){ if(on==='break') throw new TypeError("Cannot read properties of undefined (reading 'lvl')"); },
          screenToWorld:(px,py)=>({x:(px-cam.x)/cam.s,y:(py-cam.y)/cam.s}),
-         worldToScreen:(x,y)=>({x:x*cam.s+cam.x,y:y*cam.s+cam.y,behind:false}) };
+         worldToScreen:(x,y)=>({x:x*cam.s+cam.x,y:y*cam.s+cam.y,behind:false}),
+         orbit(dy,dp){ fyaw=(fyaw+(dy||0))%6.283185;
+           fpitch=clamp(fpitch+(dp||0),.3,1.44); },
+         level(){ fyaw=0; fpitch=.86; },
+         bearing:()=>fyaw, tilt:()=>fpitch };
        viewMode='3d';
        cv.style.display='none';
        if(glCv) glCv.style.display='block';
        if(ovCv) ovCv.style.display='block';
        resize(); return true;
      };
+     window.__gfx3=()=>gfx3&&gfx3.stats?gfx3.stats(worldView()):null;
+     window.__w2s=(x,y)=>w2s(x,y);
      window.__terrain=()=>terrain;
      window.__name=(x,y)=>groundName(x,y);
      window.__los=(x0,y0,x1,y1,e)=>T.sightClear(terrain,x0,y0,x1,y1,e);
@@ -6155,6 +6256,7 @@ try{ window.__lvl=(t,n)=>{ lvl[t]=n; buildPalette(); };
      window.__shake=()=>shakeNow();
      window.__nsel=()=>selected.length;
      window.__cam=()=>({x:cam.x,y:cam.y,s:cam.s});
+     window.__look=(x,y,z)=>{ if(z) cam.s=z; lookAt(x,y); return {x:cam.x,y:cam.y,s:cam.s}; };
      window.__selMode=(v)=>{ selectMode=!!v; return selectMode; };
      window.__hash=()=>stateHash();
      window.__rng=()=>seed();

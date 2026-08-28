@@ -16,10 +16,20 @@ import { buildTerrain, buildWater, groundY } from './terrainMesh.js';
 import { buildProps } from './props.js';
 import { buildUnits } from './units.js';
 import { buildParticles } from './particles.js';
+import { buildFog } from './fog.js';
+import { buildDecals } from './decals.js';
+import { buildHedges } from './hedges.js';
 
 const FOV = 45;
 const HALF_FOV = Math.tan((FOV / 2) * (Math.PI / 180));
-const PITCH = 0.86; // radians above the horizon: high enough to command, low enough to see relief
+// Where the eye stands, and how far round the field it has walked. The pitch
+// was nailed at 0.86 radians and there was no bearing at all, which meant every
+// battle was fought from the same corner and a ridge always hid the same
+// ground. Both move now, and both are clamped: flat on the horizon there is
+// nothing to command from, and straight down is the map again.
+const PITCH = 0.86;
+const PITCH_MIN = 0.3;
+const PITCH_MAX = 1.44;
 
 /** Does this device have what the 3D battlefield needs? */
 export function canRender(canvas) {
@@ -32,6 +42,7 @@ export function canRender(canvas) {
 }
 
 export function createScene({ canvas, view }) {
+  const doc = (canvas && canvas.ownerDocument) || (typeof document !== 'undefined' ? document : null);
   const renderer = new THREE.WebGLRenderer({
     canvas,
     antialias: true,
@@ -60,6 +71,8 @@ export function createScene({ canvas, view }) {
   const sky = new THREE.HemisphereLight(0xbcd6ff, 0x4a4632, 0.55);
   scene.add(sky);
 
+  const fog = buildFog({ W: view.terrain.W, H: view.terrain.H }, doc);
+
   let world = null; // terrain mesh, water, props — rebuilt per battlefield
   let units = buildUnits(scene);
   let dust = buildParticles(scene);
@@ -79,6 +92,8 @@ export function createScene({ canvas, view }) {
     world.water.geometry.dispose();
     world.water.material.dispose();
     world.props.dispose();
+    world.hedges.dispose();
+    if (world.decals) world.decals.dispose();
     world = null;
   }
 
@@ -89,9 +104,15 @@ export function createScene({ canvas, view }) {
     const water = buildWater(v.terrain, built.waterY);
     scene.add(water);
     const props = buildProps(scene, v.terrain, v);
-    world = { ground: built.mesh, water, props };
+    const hedges = buildHedges(scene, v.terrain, v.landuse);
+    // The engine's own decal canvas, handed over whole. See decals.js: this is
+    // the very sheet the flat map draws, not a copy of it.
+    const decals = buildDecals(v.decal, { W: v.terrain.W, H: v.terrain.H });
+    if (decals) decals.patch(built.mesh.material);
+    world = { ground: built.mesh, water, props, hedges, decals };
 
     scene.fog = new THREE.Fog(0x8fa0ad, 1800, 7000);
+    fog.patchScene(scene);
     worldId = v.worldId;
     treesDown = v.treesDown;
     ruins = v.ruins;
@@ -108,12 +129,26 @@ export function createScene({ canvas, view }) {
   }
 
   let camDist = 900;
+  let yaw = 0; // 0 looks up the battlefield the way the map does
+  let pitch = PITCH;
   function placeCamera(v) {
     const { fx, fy, dist } = readCamera(v);
     const gy = groundY(v.terrain, fx, fy);
     const d = Math.max(120, Math.min(9000, dist));
     camDist = d;
-    camera.position.set(fx, gy + Math.sin(PITCH) * d, fy - Math.cos(PITCH) * d);
+    // The eye stands SOUTH of what it is looking at - at greater y, not less.
+    // It used to stand north, which turned the whole battlefield through half a
+    // circle: the west bank came out on the right of the screen and the left
+    // sector at the bottom, so the field and the minimap disagreed about which
+    // flank was which. Nothing inside the 3D view gave it away, because a
+    // rotation is consistent with itself; the fog of war did, the moment the
+    // enemy's ground went dark on the wrong side.
+    const flat = Math.cos(pitch) * d;
+    camera.position.set(
+      fx + Math.sin(yaw) * flat,
+      gy + Math.sin(pitch) * d,
+      fy + Math.cos(yaw) * flat,
+    );
     camera.lookAt(fx, gy, fy);
 
     // The sun rides the day/night clock the simulation already keeps, so the
@@ -134,6 +169,7 @@ export function createScene({ canvas, view }) {
     if (scene.fog) {
       const haze = v.night ? 0x0d1420 : 0x8fa0ad;
       scene.fog.color.setHex(haze);
+      fog.setHaze(haze);
       renderer.setClearColor(haze, 1);
       scene.fog.near = d * 1.1;
       scene.fog.far = d * 4.2 + 2200;
@@ -199,13 +235,58 @@ export function createScene({ canvas, view }) {
         works = (v.walls || []).length;
       }
       placeCamera(v);
+      fog.update(v);
+      if (world.decals) world.decals.sync(v.clock || 0, v.decalV || 0);
       units.update(v, camDist);
       dust.update(v, camera);
       renderer.render(scene, camera);
     },
 
+    /**
+     * Walk round the field, or raise and lower the eye.
+     *
+     * The engine keeps the camera's position and zoom in cam.x/cam.y/cam.s, and
+     * every pan, pinch and minimap tap already moves those. Bearing and pitch
+     * are the two things the flat map has no notion of, so they live here.
+     */
+    orbit(dYaw, dPitch) {
+      if (dYaw) yaw = (yaw + dYaw) % (Math.PI * 2);
+      if (dPitch) pitch = Math.max(PITCH_MIN, Math.min(PITCH_MAX, pitch + dPitch));
+    },
+
+    /** Square up to the field again — the view the map has. */
+    level() {
+      yaw = 0;
+      pitch = PITCH;
+    },
+
+    /** Which way the camera is facing, so a drag across the screen moves the
+     *  ground the way the player can see it moving. */
+    bearing: () => yaw,
+    tilt: () => pitch,
+
+    /** What the renderer currently believes, for the tests and for anyone
+     *  standing in front of a battlefield wondering why it looks wrong. */
+    stats(v) {
+      return {
+        yaw,
+        pitch,
+        camDist,
+        fog: fog.uniforms.uFogDepth.value,
+        eyes: fog.eyeCount(),
+        // Two spots that answer the only question worth asking: is the enemy's
+        // ground actually dark, and is your own actually clear?
+        fogFar: fog.sample(v.terrain.W * 0.9, v.terrain.H * 0.5),
+        fogHome: fog.sample(v.terrain.W * 0.1, v.terrain.H * 0.5),
+        hedges: world ? world.hedges.counts : null,
+        decals: !!(world && world.decals),
+        marks: world && world.decals ? world.decals.uploads() : 0,
+      };
+    },
+
     dispose() {
       clearWorld();
+      fog.dispose();
       units.dispose();
       units = null;
       dust.dispose();
