@@ -18,12 +18,20 @@ import * as THREE from 'three';
 import { groundY } from './terrainMesh.js';
 import { WATER, FORD, ROAD, STONE, BUILD, RUBBLE, CLIFF, WOOD } from '../../world/terrain.js';
 
-// A boundary planted every eighteen metres, thinned onto a fourteen-metre grid.
+// A boundary planted every nine metres, thinned onto a seven-metre grid.
 // The grid does two jobs: neighbouring plots share a boundary and would
 // otherwise grow it twice, and a corner where four hedges meet would grow a
 // bush inside a bush.
-const STEP = 18;
-const GRID = 14;
+//
+// The step used to be eighteen and the grid fourteen, against a bush twenty-odd
+// long: consecutive crowns met end to end at best and left daylight at worst,
+// and a hedgerow came out as a string of beads. The step has to be a good deal
+// SHORTER than the crown is long, so that every bush is buried in its
+// neighbours and only the ragged top of the mass is visible. This is the whole
+// difference between a hedge and a row of shrubs, and it costs nothing but
+// instances - which are free, both meshes being drawn in one call each.
+const STEP = 9;
+const GRID = 7;
 const CAP = 16000;
 
 // Ground that is already something else. Nobody plants a hedge in a river or
@@ -44,12 +52,14 @@ function hash(n) {
   return ((h ^ (h >>> 16)) >>> 0) / 4294967296;
 }
 
-/** A squat, lumpy crown — an eight-sided sphere squashed, which at the size a
- *  hedge is drawn reads as scrub and costs sixty triangles. */
+/** A lumpy crown — a coarse sphere, stretched along the boundary when it is
+ *  placed so that neighbours run into each other. A hedge is a WALL of scrub;
+ *  drawn as round bushes it comes out a string of beads, which is the one thing
+ *  it must not look like. */
 function bushGeometry() {
   const g = new THREE.SphereGeometry(0.5, 6, 4);
-  g.scale(1, 0.8, 1);
-  g.translate(0, 0.42, 0);
+  g.scale(1, 0.86, 1);
+  g.translate(0, 0.36, 0);
   return g;
 }
 
@@ -129,14 +139,22 @@ export function buildHedges(scene, terrain, landuse) {
     const x = hedge[i];
     const y = hedge[i + 1];
     const r = hedge[i + 3];
-    // Never two the same: an even row of identical bushes reads as a fence.
-    const h = 15 + r * 13;
-    Q.setFromAxisAngle(UP, -hedge[i + 2] + (r - 0.5) * 0.5);
-    P.set(x, groundY(terrain, x, y) - 1, y);
-    S.set(14 + r * 8, h, 11 + r * 6);
+    // Long along the run and narrow across it, so the crown spans three times
+    // the step and every bush is half inside the two either side of it. What is
+    // left to see is one continuous ridge of scrub. Local +X is the line of the
+    // boundary, so the length goes there.
+    //
+    // The height is what stops that ridge reading as an extruded box: no two
+    // are the same, so the TOP is ragged even though the body is solid. The
+    // colour is only just varied, for the same reason in reverse - a hedge that
+    // changes green every nine metres comes apart into separate bushes again.
+    // It stands two to three metres, against a house at twenty-four units.
+    Q.setFromAxisAngle(UP, -hedge[i + 2] + (r - 0.5) * 0.16);
+    P.set(x, groundY(terrain, x, y) - 2, y);
+    S.set(26 + r * 6, 9 + r * 5, 7 + r * 3);
     M.compose(P, Q, S);
     bushes.setMatrixAt(j, M);
-    const g = 0.3 + r * 0.16;
+    const g = 0.3 + r * 0.09;
     C.setRGB(g * 0.62, g * 1.05, g * 0.5);
     bushes.setColorAt(j, C);
   }
@@ -148,9 +166,12 @@ export function buildHedges(scene, terrain, landuse) {
     const x = wall[i];
     const y = wall[i + 1];
     const r = wall[i + 3];
+    // A wall is built, not grown, so it keeps a flat top and one bearing; only
+    // its height wanders, the way a dry-stone wall does where it has been
+    // patched. Long enough to run into the next stretch with the step halved.
     Q.setFromAxisAngle(UP, -wall[i + 2]);
     P.set(x, groundY(terrain, x, y) - 1, y);
-    S.set(GRID + 5, 7 + r * 4, 4.4 + r * 2);
+    S.set(GRID + 7, 6 + r * 3, 3.6 + r * 1.6);
     M.compose(P, Q, S);
     stones.setMatrixAt(j, M);
   }

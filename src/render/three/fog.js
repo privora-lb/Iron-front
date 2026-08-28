@@ -80,6 +80,13 @@ export function buildFog({ W, H }, doc) {
       shader.uniforms.uFogSize = uniforms.uFogSize;
       shader.uniforms.uFogColour = uniforms.uFogColour;
       shader.uniforms.uFogDepth = uniforms.uFogDepth;
+      // Every stock material carries the fog chunk whether or not fog is
+      // switched on - USE_FOG gates the body, not the include - but a custom
+      // shader might not, and a patch that silently does nothing is worse than
+      // one that is a little late. Fall back to the old spot in that case.
+      const anchor = shader.fragmentShader.includes('#include <fog_fragment>')
+        ? '#include <fog_fragment>'
+        : '#include <opaque_fragment>';
       shader.fragmentShader = shader.fragmentShader
         .replace(
           '#include <common>',
@@ -89,11 +96,19 @@ uniform vec2 uFogSize;
 uniform vec3 uFogColour;
 uniform float uFogDepth;`,
         )
-        // After the colour is assembled and before it is tone mapped, so the
-        // fog mixes in the same linear space the lighting worked in.
+        // LAST, after three's own distance haze has had its say.
+        //
+        // This used to mix in at <opaque_fragment>, which is before tone
+        // mapping and before <fog_fragment> - so the aerial haze was then
+        // blended over the top and lifted the darkened ground straight back
+        // toward the colour of the sky. Ground nobody had scouted came out
+        // milk-white at any distance worth looking at, which is the exact
+        // opposite of hiding it. Darkness has to be the last word: a wood in
+        // the fog is dark whether it is two hundred metres away or two
+        // thousand.
         .replace(
-          '#include <opaque_fragment>',
-          `#include <opaque_fragment>
+          anchor,
+          `${anchor}
   {
     float ifFog = texture2D( uFogMap, vIfWorld.xz / uFogSize ).a * uFogDepth;
     gl_FragColor.rgb = mix( gl_FragColor.rgb, uFogColour, ifFog );
@@ -121,14 +136,22 @@ uniform float uFogDepth;`,
     patchScene,
 
     /**
-     * The colour unscouted ground fades toward. Taken from the sky's own haze
-     * so it belongs to the hour, and then taken most of the way down toward
-     * black: ground nobody has walked over should read as dark and dead, not as
-     * ground that merely happens to be a long way off. The flat map makes the
-     * same choice - it lays a near-black sheet, not a pale one.
+     * The colour unscouted ground fades toward: the SAME near-black sheet the
+     * flat map lays, which is rgba(7,9,11,.62).
+     *
+     * It is taken from the sky's own haze so that it still belongs to the hour,
+     * and then taken almost all the way down to black. At three tenths of the
+     * haze - where this started - unscouted ground came out a mid grey: over a
+     * green field that reads as washed-out, not as hidden, and a player looking
+     * at the far half of the battlefield could still make out its fields and
+     * its roads. Ground nobody has walked over should be dark and dead.
      */
     setHaze(hex) {
-      uniforms.uFogColour.value.setHex(hex).multiplyScalar(0.3);
+      // Held in OUTPUT space, not the working space a colour normally lands in:
+      // the mix happens after <colorspace_fragment>, so the pixel is already
+      // encoded and a linear colour would come out darker than it reads here.
+      // LinearSRGBColorSpace is three's way of saying "store what I gave you".
+      uniforms.uFogColour.value.setHex(hex, THREE.LinearSRGBColorSpace).multiplyScalar(0.07);
     },
 
     /**
@@ -137,7 +160,9 @@ uniform float uFogDepth;`,
      */
     update(v) {
       const on = v.phase === 'battle' || v.phase === 'deploy';
-      uniforms.uFogDepth.value = on ? 0.8 : 0;
+      // .62, the same weight the flat map gives its sheet, so the two views
+      // hide exactly as much as each other.
+      uniforms.uFogDepth.value = on ? 0.62 : 0;
       if (!on || !g || !g.setTransform) {
         lit = false;
         return;

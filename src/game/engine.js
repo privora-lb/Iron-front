@@ -192,7 +192,11 @@ function paintProf(){
     +' · best score <b>'+prof.best.toLocaleString()+'</b> · <b>'+prof.kills.toLocaleString()+'</b> enemy dead';
 }
 let lvl={blue:1,red:1},xp={blue:0,red:0};
-const reqLvl=k=>k==='wall'?WALL.lvl:k==='mine'?MINE.lvl:k==='wire'?WIRE.lvl:k==='trench'?TRENCH.lvl:UNITS[k].lvl;
+// Total, on purpose: an unknown key is something you can never unlock, not a
+// crash. UNITS[k].lvl on a key that is not a unit - null, a stale save, a
+// group bound to a unit that has since been renamed - threw a TypeError out
+// of a tap handler and took the whole match down with it.
+const reqLvl=k=>k==='wall'?WALL.lvl:k==='mine'?MINE.lvl:k==='wire'?WIRE.lvl:k==='trench'?TRENCH.lvl:(UNITS[k]?UNITS[k].lvl:Infinity);
 const unlocked=(team,k)=>sandbox||lvl[team]>=reqLvl(k);
 function addXP(team,amt){
   xp[team]+=amt;
@@ -2652,6 +2656,10 @@ function hurt(v,a,by){
   v.hp-=a;
   if(v.hp<=0){
     v.alive=false; bloodMark(v.x,v.y,v.sq.team); stats[v.sq.team]++;
+    // The cap was written and never applied - with no braces it guarded the
+    // plume and let every body through. It has never bitten in a real battle,
+    // since the dead fade in a couple of seconds, but the code should say what
+    // it means.
     if(bodies.length<240){                         // he goes down where he stood
       if(v.sq.t.vehicle&&plumes.length<26) plumes.push({x:v.x,y:v.y,t:vr(5,10)});
       bodies.push({x:v.x,y:v.y,a:v.ang,team:v.sq.team,veh:!!v.sq.t.vehicle,
@@ -2949,6 +2957,13 @@ function buildWork(team,what,x,y,a){
   burst(x,y,6,'dust');
 }
 function place(team,x,y){
+  // Nothing picked from the deck. Tapping bare ground in DEPLOY is not an
+  // attempt to buy anything, but the deploy handler called through here
+  // unguarded - the battle handler checks `placing` first and deploy did not -
+  // so a tap on the field before choosing a unit went into unlocked(team,null)
+  // and threw. That is the crash the live site showed on a fresh match.
+  if(!placing){ toast('Pick something from the deck first'); return; }
+  if(!isWork(placing)&&!UNITS[placing]) return;     // not a thing that is for sale
   if(!unlocked(team,placing)){ toast(('Unlocks at level '+reqLvl(placing))); return; }
   const cost=placing==='wall'?WALL.cost:placing==='mine'?MINE.cost:
     placing==='wire'?WIRE.cost:placing==='trench'?TRENCH.cost:unitCost(placing);
@@ -3824,7 +3839,7 @@ function stateHash(){
 // this would put the two machines in a match on different courses.
 function worldView(){
   return {
-    terrain, cam, pal:MAPS[mapType].pal, landuse, worldId, treesDown, ruins:ruinsN,
+    terrain, cam, pal:MAPS[mapType].pal, map:mapType, landuse, worldId, treesDown, ruins:ruinsN,
     squads, soldiers, buildings, trees, walls, castles, bases, shots, parts, bodies,
     selected, phase, clock, tod, sun, dayLight, night,
     // The fog of war, the marks in the ground and the dead: three things the
@@ -6166,30 +6181,39 @@ try{ window.__lvl=(t,n)=>{ lvl[t]=n; buildPalette(); };
      // A renderer that answers like the real one and draws nothing, so the
      // harness can run the whole 3D frame path - the overlay, the chips, the
      // minimap on its own canvas - on a machine with no graphics card.
+     // How far the stub renderer's idea of the screen sits from the map's.
+     const FAKE3D_OFF=180;
      window.__fake3d=(on)=>{
        if(!on){ viewMode='top'; gfx3=null;
          cv.style.display='block';
          if(glCv) glCv.style.display='none';
          if(ovCv) ovCv.style.display='none';
-         resize(); return false; }
+         resize(); paintViewBtn(); return false; }
        // A renderer that answers like the real one and draws nothing. It keeps
        // a bearing and a pitch because the engine steers those and the tests
-       // read them back to prove a drag turned the camera.
+       // read them back to prove a drag turned the camera, and it projects the
+       // field a fixed distance from where the flat map would put it: anything
+       // that asks the MAP where a unit is on screen, rather than asking the
+       // renderer, is then wrong by exactly that much and cannot pass by luck.
        let fyaw=0,fpitch=.86;
        gfx3={ resize(){}, dispose(){},
          frame(){ if(on==='break') throw new TypeError("Cannot read properties of undefined (reading 'lvl')"); },
-         screenToWorld:(px,py)=>({x:(px-cam.x)/cam.s,y:(py-cam.y)/cam.s}),
-         worldToScreen:(x,y)=>({x:x*cam.s+cam.x,y:y*cam.s+cam.y,behind:false}),
+         screenToWorld:(px,py)=>({x:(px-FAKE3D_OFF-cam.x)/cam.s,y:(py-cam.y)/cam.s}),
+         worldToScreen:(x,y)=>({x:x*cam.s+cam.x+FAKE3D_OFF,y:y*cam.s+cam.y,behind:false}),
          orbit(dy,dp){ fyaw=(fyaw+(dy||0))%6.283185;
            fpitch=clamp(fpitch+(dp||0),.3,1.44); },
          level(){ fyaw=0; fpitch=.86; },
-         bearing:()=>fyaw, tilt:()=>fpitch };
+         bearing:()=>fyaw, tilt:()=>fpitch,
+         stats:()=>({yaw:fyaw,pitch:fpitch,camDist:900,fog:0,eyes:visionEyes.length/3,
+           hedges:null,decals:false,marks:0}) };
        viewMode='3d';
        cv.style.display='none';
        if(glCv) glCv.style.display='block';
        if(ovCv) ovCv.style.display='block';
-       resize(); return true;
+       resize(); paintViewBtn(); return true;
      };
+     window.__fake3doff=()=>FAKE3D_OFF;
+     window.__deselect=()=>{ selected=[]; return selected.length; };
      window.__gfx3=()=>gfx3&&gfx3.stats?gfx3.stats(worldView()):null;
      window.__w2s=(x,y)=>w2s(x,y);
      window.__terrain=()=>terrain;

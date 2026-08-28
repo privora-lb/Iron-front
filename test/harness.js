@@ -410,6 +410,31 @@ function touch(g, x, y, type) {
     preventDefault() {}, stopPropagation() {},
   });
 }
+// A key, and a mouse. Keys are listened for on the document and mouse moves
+// on the window, so neither can be dispatched at an element the way touches
+// can; the events go where the engine is actually listening.
+function key(g, k) {
+  g.el('hud').dispatchEvent({
+    type: 'keydown', key: k, ctrlKey: false, metaKey: false,
+    preventDefault() {}, stopPropagation() {},
+  });
+}
+function mouse(g, type, o) {
+  const ev = Object.assign(
+    { type, button: 0, clientX: 0, clientY: 0, shiftKey: false,
+      preventDefault() {}, stopPropagation() {} },
+    o,
+  );
+  if (type === 'mousedown') { g.el('ov').dispatchEvent(ev); return; }
+  for (const fn of (g.win._l && g.win._l[type]) || []) fn(ev);
+}
+function drag(g, button, x0, y0, x1, y1) {
+  mouse(g, 'mousedown', { button, clientX: x0, clientY: y0 });
+  mouse(g, 'mousemove', { clientX: (x0 + x1) / 2, clientY: (y0 + y1) / 2 });
+  mouse(g, 'mousemove', { clientX: x1, clientY: y1 });
+  mouse(g, 'mouseup', {});
+}
+
 function battle(budget) {
   const g = loadGame({ quiet: true });
   g.all('#mapPick [data-map="villages"]')[0].click();
@@ -475,6 +500,46 @@ function battle(budget) {
   }
   if (problems.length) bad('a finger can select several units', problems.join(BR));
   else ok('a finger can select several units', 'quick drag pans, hold-drag and Select mode box-select');
+}
+
+// Tapping bare ground before choosing anything to buy.
+//
+// This is the first thing a player does on a fresh match, and it took the live
+// site down: the DEPLOY handler called place() without checking that anything
+// had been picked from the deck - the BATTLE handler checks, deploy did not -
+// and place() went straight into unlocked(team, null), where reqLvl read
+// UNITS[null].lvl and threw. The red bar came up over an empty battlefield
+// before the player had done anything at all.
+{
+  const problems = [];
+  const g = loadGame({ quiet: true });
+  g.all('#mapPick [data-map="villages"]')[0].click();
+  g.all('#startVeil [data-budget="2000"]')[0].click();
+  if (g.hook('worldview')().phase !== 'deploy') problems.push('the match did not stop in deploy to be tapped');
+  const before = g.hook('worldview')().squads.length;
+  // Ground inside our own deployment zone, so these are taps that WOULD have
+  // bought something had anything been chosen - not taps the engine was going
+  // to turn away anyway.
+  const SPOTS = [[500, 350], [420, 260]];
+  for (const [x, y] of SPOTS) {
+    touch(g, x, y, 'touchstart');
+    touch(g, 0, 0, 'touchend'); g.frame();
+  }
+  if (g.fault()) problems.push('tapping the field threw: ' + g.fault().split(BR)[1]);
+  const after = g.hook('worldview')().squads.length;
+  if (after !== before) problems.push('a tap with nothing chosen deployed ' + (after - before) + ' units anyway');
+  // and with something chosen the very same tap still buys, so the guard has
+  // not quietly killed deployment along with the crash
+  const card = g.all('#pal .card')[0];
+  if (!card) problems.push('the deck offers nothing to buy in deploy');
+  else card.click();
+  touch(g, SPOTS[0][0], SPOTS[0][1], 'touchstart');
+  touch(g, 0, 0, 'touchend'); g.frame();
+  if (g.fault()) problems.push('buying after the guard threw: ' + g.fault().split(BR)[1]);
+  if (g.hook('worldview')().squads.length <= before)
+    problems.push('nothing could be deployed once a unit HAD been chosen');
+  if (problems.length) bad('tapping the ground before buying anything is harmless', problems.join(BR));
+  else ok('tapping the ground before buying anything is harmless', 'three taps on bare ground, then a real one');
 }
 
 /* ------------------------------------------------------------------ */
@@ -838,7 +903,7 @@ head('9. RENDERERS');
     bad('the 3D renderer survives a real battle', (e.stdout || '') + (e.stderr || '') || e.message);
   }
   if (out) {
-    if (out.ok) ok('the 3D renderer survives a real battle', out.frames + ' frames, two battlefields, no GPU');
+    if (out.ok) ok('the 3D renderer survives a real battle', (out.notes || []).join('; ') || out.frames + ' frames');
     else bad('the 3D renderer survives a real battle', out.fails.join(BR));
   }
 }
@@ -882,6 +947,165 @@ head('9. RENDERERS');
   if (g.frames(20) !== 20) problems.push('the animation loop stopped asking for frames');
   if (problems.length) bad('a renderer that fails hands the battle back to the map', problems.join(BR));
   else ok('a renderer that fails hands the battle back to the map', 'reported once, fell back, kept playing');
+}
+
+
+// The renderer may not spend the simulation's randomness.
+//
+// This is rule one, and it was being broken in nine places: a burning wreck, a
+// helicopter's downwash, a tank's exhaust, a shell's smoke trail and the
+// rubble of a fallen keep all drew their numbers from R(), the seeded stream
+// both machines in a match replay. How many frames a player's machine managed,
+// and whether they were watching the map or the field, decided where that
+// stream went next - a desync with no way back, and invisible until it bites.
+//
+// So: pause a battle that has men down and shells in the air, draw a hundred
+// and twenty frames, and nothing about the match may have moved.
+{
+  // A rich battle, so that armour, aircraft, shells in flight, burning wrecks
+  // and a fallen keep are all on the field at once: every one of them had a
+  // hand in the shared stream, and a poor battle would prove nothing.
+  const g = loadGame({ quiet: true });
+  g.hook('seed')(4242);
+  startMatch(g, 'villages', 999999);
+  g.hook('tick')(FAST ? 1200 : 3000);
+  const problems = [];
+  g.frames(2);
+  // Zoomed out, a squad is one marker and none of the detailed drawing runs at
+  // all. The camera has to be down among the men, where the exhaust, the smoke
+  // and the burning wrecks are actually painted, or this proves nothing.
+  const v = g.hook('worldview')();
+  const at = v.bodies[0] || v.squads.find(sq => !sq.gone) || { x: 2600, y: 1650, fx: 2600, fy: 1650 };
+  g.hook('look')(at.x === undefined ? at.fx : at.x, at.y === undefined ? at.fy : at.y, 1.2);
+  g.hook('pause')();
+  const rng = g.hook('rng')();
+  const hash = g.hook('hash')();
+  let drew = g.frames(60);
+  g.hook('look')(2600, 1650, 0.6);                // and again from further back
+  drew += g.frames(60);
+  if (drew < 120) problems.push('the animation loop stopped after ' + drew + ' frames');
+  if (g.fault()) problems.push('drawing threw: ' + g.fault().split(BR)[1]);
+  if (g.hook('rng')() !== rng)
+    problems.push('drawing moved the shared random stream on: ' + rng + ' became ' + g.hook('rng')());
+  if (g.hook('hash')() !== hash) problems.push('drawing changed the state of the match');
+  if (problems.length) bad('drawing a frame never touches the simulation', problems.join(BR));
+  else ok('drawing a frame never touches the simulation', '120 frames close in and far back, the stream unmoved');
+}
+
+// The fog of war, the marks in the ground and the dead are three things the map
+// has always drawn and the 3D field could not see. They reach it the way
+// everything else does - by reference, through the one world view.
+{
+  const g = loadGame({ quiet: true });
+  g.hook('seed')(4242);
+  startMatch(g, 'villages', 2000);
+  g.hook('tick')(900);
+  g.frames(3);                                    // what can see is worked out per frame
+  const problems = [];
+  const v = g.hook('worldview')();
+  if (!v.eyes || !v.eyes.length) problems.push('the 3D view is not told what can see');
+  else if (v.eyes.length % 3) problems.push('the eyes are not x, y and range');
+  if (!v.decal) problems.push('the 3D view is not offered the sheet the marks are painted on');
+  if (!(v.decalV > 0)) problems.push('nothing has been painted into the ground after 900 ticks');
+  if (!Array.isArray(v.bodies)) problems.push('the 3D view cannot see the dead');
+  const before = v.decalV;
+  g.hook('tick')(600);
+  const after = g.hook('worldview')();
+  if (after.decal !== v.decal) problems.push('the decal sheet was copied, so the 3D ground would go stale');
+  if (!(after.decalV > before)) problems.push('the count of marks never moves, so the ground would never be resent');
+  // The dead have to be cleared as well as laid out. If they were only ever
+  // pushed, a long battle would hand the renderer a longer list every frame
+  // until the field was nothing but corpses.
+  let most = 0;
+  let fell = false;
+  let last = after.bodies.length;
+  for (let i = 0; i < 20; i++) {
+    g.hook('tick')(120);
+    const n = g.hook('worldview')().bodies.length;
+    if (n > most) most = n;
+    if (n < last) fell = true;
+    last = n;
+  }
+  if (!most) problems.push('nobody died in forty seconds of battle');
+  if (!fell) problems.push('the dead are never cleared - the list only ever grows');
+  if (most > 240) problems.push(most + ' bodies on the field at once, past the cap of 240');
+  if (problems.length) bad('the 3D field is told about the fog, the marks and the dead', problems.join(BR));
+  else ok('the 3D field is told about the fog, the marks and the dead', 'by reference; the dead are laid out and cleared');
+}
+
+// Walking round the field. The map has one bearing and always did; the 3D
+// camera has whichever one the player has turned to, and every way of turning
+// it has to reach the renderer - while the flat map is left exactly as it was.
+{
+  const g = loadGame({ quiet: true });
+  g.hook('seed')(4242);
+  startMatch(g, 'villages', 2000);
+  const problems = [];
+  if (!g.hook('fake3d')(true)) problems.push('the stub renderer would not start');
+  const cam = () => g.hook('gfx3')();
+  if (cam().yaw !== 0) problems.push('the camera does not start square to the field');
+  key(g, ']');
+  key(g, ']');
+  if (!(cam().yaw > 0)) problems.push('the keys do not turn the camera');
+  key(g, ',');
+  if (!(cam().pitch < 0.86)) problems.push('the keys do not lower the eye');
+  // clamped at both ends: nobody may lie down on the horizon or stare straight down
+  for (let i = 0; i < 60; i++) key(g, ',');
+  if (cam().pitch < 0.29) problems.push('the eye sank below the horizon');
+  for (let i = 0; i < 60; i++) key(g, '.');
+  if (cam().pitch > 1.45) problems.push('the eye went past straight down');
+  g.el('zlook').click();
+  if (cam().yaw !== 0 || cam().pitch !== 0.86) problems.push('the compass did not square the camera up');
+  if (g.el('zlook').style.display !== 'block') problems.push('the compass is hidden while the field is showing');
+  // a right-button drag walks round the field and does NOT shove the map
+  const was = g.hook('cam')();
+  drag(g, 2, 400, 300, 640, 340);
+  if (!(cam().yaw > 0)) problems.push('a right-button drag did not walk the camera round');
+  if (Math.abs(g.hook('cam')().x - was.x) > 0.001) problems.push('a right-button drag shoved the map as well');
+  // and over the map, the same drag still pans, exactly as it always did
+  g.hook('fake3d')(false);
+  const flat = g.hook('cam')();
+  drag(g, 2, 400, 300, 640, 340);
+  if (Math.abs(g.hook('cam')().x - flat.x) < 100) problems.push('the same drag no longer pans the flat map');
+  if (g.el('zlook').style.display !== 'none') problems.push('the compass is still showing over the map');
+  if (problems.length) bad('the camera can be walked round the field', problems.join(BR));
+  else ok('the camera can be walked round the field', 'keys, right-drag and the compass; the map untouched');
+}
+
+// A selection box has to be drawn against what is ON SCREEN. The flat map's
+// projection is a scale and an offset; the 3D one is a perspective from
+// wherever the player has walked to, and the two stop agreeing the moment the
+// camera tilts - which it always was. The stub renderer deliberately puts the
+// field somewhere the map does not, so a box in the wrong place cannot pass by
+// luck.
+{
+  const g = loadGame({ quiet: true });
+  g.hook('seed')(4242);
+  startMatch(g, 'villages', 2000);
+  const problems = [];
+  g.hook('fake3d')(true);
+  const OFF = g.hook('fake3doff')();
+  if (OFF < 120) problems.push('the stub renderer projects too close to the map for this to prove anything');
+  const v = g.hook('worldview')();
+  // somebody of ours, clear of the minimap in both projections
+  const mine = v.squads.filter(sq => {
+    if (sq.team !== v.viewTeam || sq.gone) return false;
+    const p = g.hook('w2s')(sq.fx, sq.fy);
+    return p.x > 400 && p.x < 1100 && p.y > 340 && p.y < 640;
+  });
+  if (!mine.length) problems.push('nobody of ours is on screen to box');
+  else {
+    const p = g.hook('w2s')(mine[0].fx, mine[0].fy);
+    const box = (cx, cy) => {
+      g.hook('deselect')();                       // start from nothing selected
+      drag(g, 0, cx - 70, cy - 70, cx + 70, cy + 70);
+      return g.hook('nsel')();
+    };
+    if (!box(p.x, p.y)) problems.push('a box drawn where the renderer says the unit is selected nobody');
+    if (box(p.x - OFF, p.y)) problems.push('a box drawn where the flat map says the unit is still selected it');
+  }
+  if (problems.length) bad('a selection box follows the view the player is looking at', problems.join(BR));
+  else ok('a selection box follows the view the player is looking at', 'boxed by the renderer, not by the map');
 }
 
 /* ------------------------------------------------------------------ */

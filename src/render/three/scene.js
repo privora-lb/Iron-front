@@ -12,13 +12,15 @@
 // the screen and the scale out of those three numbers, so all of that input
 // keeps working without a line of it being touched.
 import * as THREE from 'three';
-import { buildTerrain, buildWater, groundY } from './terrainMesh.js';
+import { buildTerrain, buildWater, groundY, setWaterTime } from './terrainMesh.js';
 import { buildProps } from './props.js';
 import { buildUnits } from './units.js';
 import { buildParticles } from './particles.js';
 import { buildFog } from './fog.js';
 import { buildDecals } from './decals.js';
 import { buildHedges } from './hedges.js';
+import { buildClutter } from './clutter.js';
+import { buildSky } from './sky.js';
 
 const FOV = 45;
 const HALF_FOV = Math.tan((FOV / 2) * (Math.PI / 180));
@@ -30,6 +32,24 @@ const HALF_FOV = Math.tan((FOV / 2) * (Math.PI / 180));
 const PITCH = 0.86;
 const PITCH_MIN = 0.3;
 const PITCH_MAX = 1.44;
+
+/**
+ * Where the eye stands to look at one point on the battlefield.
+ *
+ * Pulled out of the frame loop because it is the one piece of camera work with
+ * a right answer that can be checked without a graphics card - and it was
+ * wrong. The eye must stand SOUTH of what it is watching, at greater y, so that
+ * west comes out on the left of the screen and the left sector at the top,
+ * exactly as they are on the map and on the minimap. Standing north of it turns
+ * the whole battlefield through half a circle; every part of the 3D view agrees
+ * with every other part, so nothing looks broken, and the flanks are swapped.
+ *
+ * @returns [x, y, z] in scene units
+ */
+export function eyePosition(fx, gy, fy, dist, yaw, pitch) {
+  const flat = Math.cos(pitch) * dist;
+  return [fx + Math.sin(yaw) * flat, gy + Math.sin(pitch) * dist, fy + Math.cos(yaw) * flat];
+}
 
 /** Does this device have what the 3D battlefield needs? */
 export function canRender(canvas) {
@@ -51,6 +71,13 @@ export function createScene({ canvas, view }) {
   renderer.setClearColor(0x101218, 1);
   renderer.shadowMap.enabled = true;
   renderer.shadowMap.type = THREE.PCFShadowMap;
+  // Light does not clip in the world, and it should not clip here. Without a
+  // tone curve everything brighter than one unit came out the same flat white -
+  // sand, stone, roads, a lit hillside - and all of the detail that had been
+  // worked into them went with it. A filmic curve rolls the highlights off
+  // instead, which is what lets midday look like midday.
+  renderer.toneMapping = THREE.ACESFilmicToneMapping;
+  renderer.toneMappingExposure = 1.05;
 
   const scene = new THREE.Scene();
   const camera = new THREE.PerspectiveCamera(FOV, 1, 8, 14000);
@@ -60,11 +87,9 @@ export function createScene({ canvas, view }) {
   sun.shadow.mapSize.set(2048, 2048);
   const sc = sun.shadow.camera;
   sc.near = 200;
-  sc.far = 5200;
-  sc.left = -1100;
-  sc.right = 1100;
-  sc.top = 1100;
-  sc.bottom = -1100;
+  // Mountains stand two and a half times as tall as they used to, and a shadow
+  // box cut for flat country clipped the tops off them.
+  sc.far = 7000;
   scene.add(sun);
   scene.add(sun.target);
 
@@ -74,6 +99,8 @@ export function createScene({ canvas, view }) {
   const fog = buildFog({ W: view.terrain.W, H: view.terrain.H }, doc);
 
   let world = null; // terrain mesh, water, props — rebuilt per battlefield
+  let clutter = buildClutter(scene);
+  let sky3 = buildSky(scene);
   let units = buildUnits(scene);
   let dust = buildParticles(scene);
   let worldId = -1;
@@ -88,6 +115,11 @@ export function createScene({ canvas, view }) {
     scene.remove(world.ground);
     world.ground.geometry.dispose();
     world.ground.material.dispose();
+    if (world.apron) {
+      scene.remove(world.apron);
+      world.apron.geometry.dispose();
+      world.apron.material.dispose();
+    }
     scene.remove(world.water);
     world.water.geometry.dispose();
     world.water.material.dispose();
@@ -99,8 +131,9 @@ export function createScene({ canvas, view }) {
 
   function buildWorld(v) {
     clearWorld();
-    const built = buildTerrain(v.terrain, v.pal, v.landuse);
+    const built = buildTerrain(v.terrain, v.pal, v.landuse, v.map);
     scene.add(built.mesh);
+    if (built.apron) scene.add(built.apron);
     const water = buildWater(v.terrain, built.waterY);
     scene.add(water);
     const props = buildProps(scene, v.terrain, v);
@@ -109,7 +142,7 @@ export function createScene({ canvas, view }) {
     // the very sheet the flat map draws, not a copy of it.
     const decals = buildDecals(v.decal, { W: v.terrain.W, H: v.terrain.H });
     if (decals) decals.patch(built.mesh.material);
-    world = { ground: built.mesh, water, props, hedges, decals };
+    world = { ground: built.mesh, apron: built.apron, water, props, hedges, decals };
 
     scene.fog = new THREE.Fog(0x8fa0ad, 1800, 7000);
     fog.patchScene(scene);
@@ -129,26 +162,20 @@ export function createScene({ canvas, view }) {
   }
 
   let camDist = 900;
+  let focusX = 0;
+  let focusY = 0;
+  let shadowBox = 0;
   let yaw = 0; // 0 looks up the battlefield the way the map does
   let pitch = PITCH;
   function placeCamera(v) {
     const { fx, fy, dist } = readCamera(v);
+    focusX = fx;
+    focusY = fy;
     const gy = groundY(v.terrain, fx, fy);
     const d = Math.max(120, Math.min(9000, dist));
     camDist = d;
-    // The eye stands SOUTH of what it is looking at - at greater y, not less.
-    // It used to stand north, which turned the whole battlefield through half a
-    // circle: the west bank came out on the right of the screen and the left
-    // sector at the bottom, so the field and the minimap disagreed about which
-    // flank was which. Nothing inside the 3D view gave it away, because a
-    // rotation is consistent with itself; the fog of war did, the moment the
-    // enemy's ground went dark on the wrong side.
-    const flat = Math.cos(pitch) * d;
-    camera.position.set(
-      fx + Math.sin(yaw) * flat,
-      gy + Math.sin(pitch) * d,
-      fy + Math.cos(yaw) * flat,
-    );
+    const eye = eyePosition(fx, gy, fy, d, yaw, pitch);
+    camera.position.set(eye[0], eye[1], eye[2]);
     camera.lookAt(fx, gy, fy);
 
     // The sun rides the day/night clock the simulation already keeps, so the
@@ -162,17 +189,45 @@ export function createScene({ canvas, view }) {
     );
     sun.target.position.set(fx, gy, fy);
     sun.target.updateMatrixWorld();
-    sun.intensity = 0.25 + 1.35 * light;
+    // The shadow box follows the zoom. Nailed at eleven hundred units it
+    // covered a fifth of the field once the camera was pulled back, and every
+    // fragment beyond it sampled the edge of the shadow map - which laid a hard
+    // dark band straight across the countryside wherever the box ran out.
+    const box = Math.max(700, Math.min(3400, d * 0.95));
+    if (Math.abs(box - shadowBox) > 40) {
+      shadowBox = box;
+      sc.left = -box;
+      sc.right = box;
+      sc.top = box;
+      sc.bottom = -box;
+      sc.updateProjectionMatrix();
+    }
+    // Midday used to put two units of light on ground with half a unit of
+    // albedo, and everything paler than a field clipped to flat white: the
+    // stone, the sand, the shingle and the roads all came out as blank paper
+    // with no texture in them at all, whatever the ground was doing underneath.
+    // Nothing here is bright enough to blow out now.
+    // Brighter than it looks: the tone curve above takes the top off, so the
+    // sun has to be pushed well past one for a midday field to read as lit.
+    sun.intensity = 0.3 + 2.15 * light;
     sun.color.setRGB(1, 0.86 + 0.14 * light, 0.66 + 0.34 * light);
-    sky.intensity = 0.22 + 0.5 * light;
+    sky.intensity = 0.26 + 0.62 * light;
     sky.color.setRGB(0.5 + 0.24 * light, 0.6 + 0.24 * light, 0.78 + 0.22 * light);
     if (scene.fog) {
       const haze = v.night ? 0x0d1420 : 0x8fa0ad;
       scene.fog.color.setHex(haze);
       fog.setHaze(haze);
       renderer.setClearColor(haze, 1);
-      scene.fog.near = d * 1.1;
-      scene.fog.far = d * 4.2 + 2200;
+      sky3.update(camera, haze, sun.position, [fx, gy, fy], light);
+      // Aerial perspective, not a smear. Tied only to how far back the camera
+      // stands, closing in on the field put the haze a hundred metres from the
+      // lens and turned the whole battlefield milk; the floor keeps the near
+      // ground clear however far in the player goes.
+      scene.fog.near = Math.max(900, d * 1.1);
+      // Far enough that the battlefield itself is clear, close enough that the
+      // land running out past it goes into the haze rather than ending on a
+      // hard line against the sky.
+      scene.fog.far = Math.max(4600, d * 3.0 + 1600);
     }
   }
 
@@ -235,6 +290,10 @@ export function createScene({ canvas, view }) {
         works = (v.walls || []).length;
       }
       placeCamera(v);
+      clutter.update(v, focusX, focusY, camDist);
+      // The river runs whether or not the battle is paused; it is scenery, and
+      // it is nothing the simulation has ever heard of.
+      setWaterTime((typeof performance !== 'undefined' ? performance.now() : 0) / 1000);
       fog.update(v);
       if (world.decals) world.decals.sync(v.clock || 0, v.decalV || 0);
       units.update(v, camDist);
@@ -279,6 +338,7 @@ export function createScene({ canvas, view }) {
         fogFar: fog.sample(v.terrain.W * 0.9, v.terrain.H * 0.5),
         fogHome: fog.sample(v.terrain.W * 0.1, v.terrain.H * 0.5),
         hedges: world ? world.hedges.counts : null,
+        clutter: clutter.counts(),
         decals: !!(world && world.decals),
         marks: world && world.decals ? world.decals.uploads() : 0,
       };
@@ -286,6 +346,10 @@ export function createScene({ canvas, view }) {
 
     dispose() {
       clearWorld();
+      sky3.dispose();
+      sky3 = null;
+      clutter.dispose();
+      clutter = null;
       fog.dispose();
       units.dispose();
       units = null;
