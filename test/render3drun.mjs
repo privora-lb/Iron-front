@@ -18,6 +18,8 @@ import { buildParticles } from '../src/render/three/particles.js';
 import { buildTerrain, buildWater } from '../src/render/three/terrainMesh.js';
 import { buildHedges } from '../src/render/three/hedges.js';
 import { buildClutter } from '../src/render/three/clutter.js';
+import { buildLife } from '../src/render/three/life.js';
+import { buildWind } from '../src/render/three/wind.js';
 import { buildFog } from '../src/render/three/fog.js';
 import { buildDecals } from '../src/render/three/decals.js';
 import { eyePosition } from '../src/render/three/scene.js';
@@ -273,6 +275,106 @@ step('the dead lie where the map lays them', () => {
   const fell = down - total();
   if (fell !== 5) fails.push('the dead came to ' + fell + ' instances, not five');
   notes.push('dead: two men and a wreck laid out, the spent one dropped');
+});
+
+/* ---- the men are walking, not sliding ---- */
+step('a man walks on the phase the simulation is keeping', () => {
+  const v = view();
+  // Of the watching side: an enemy squad nobody has scouted is culled by the
+  // fog before it is ever laid out, and would prove nothing about the walk.
+  const live = (v.soldiers || []).find(
+    (s) => s.alive && s.sq.team === v.viewTeam && s.sq.seen && !s.sq.t.vehicle && !s.sq.t.air,
+  );
+  if (!live) {
+    fails.push('no infantry on the field to check');
+    return;
+  }
+  // Two men, same place, same bearing, at opposite points of the same stride.
+  const man = (step, moved) => ({
+    sq: live.sq, x: 900, y: 900, alive: true, ang: 0.4,
+    step, moved, v: 0, kick: 0, hull: 0, turret: 0, rec: 0,
+  });
+  const read = (soldiers) => {
+    units.update({ ...v, soldiers }, 900);
+    const out = [];
+    const m = new THREE.Matrix4();
+    const P = new THREE.Vector3();
+    scene.traverse((o) => {
+      if (!o.isInstancedMesh || !o.count) return;
+      o.getMatrixAt(0, m);
+      P.setFromMatrixPosition(m);
+      out.push([P.x, P.y, P.z, m.elements[1], m.elements[4]]);
+    });
+    return out;
+  };
+  const down = read([man(0, 1)]); // mid-stride
+  const up = read([man(Math.PI / 2, 1)]); // and a half-pace later
+  let moved = 0;
+  for (let i = 0; i < Math.min(down.length, up.length); i++)
+    for (let k = 0; k < 5; k++) if (Math.abs(down[i][k] - up[i][k]) > 0.05) moved++;
+  if (!moved) fails.push('nothing about a man changes between one pace and the next');
+
+  // Standing still he does not stride, but he is not frozen either.
+  const stillA = read([man(0.0, 0)]);
+  const stillB = read([man(2.4, 0)]);
+  let strode = 0;
+  for (let i = 0; i < Math.min(stillA.length, stillB.length); i++)
+    for (let k = 0; k < 5; k++) if (Math.abs(stillA[i][k] - stillB[i][k]) > 0.05) strode++;
+  if (strode) fails.push('a man standing still is still swinging his legs');
+
+  // And the flinch: firing rocks him back off the spot he is standing on.
+  const calm = read([man(0, 0)]);
+  const fired = read([{ ...man(0, 0), kick: 1 }]);
+  let rocked = false;
+  for (let i = 0; i < Math.min(calm.length, fired.length); i++)
+    if (Math.hypot(calm[i][0] - fired[i][0], calm[i][2] - fired[i][2]) > 0.4) rocked = true;
+  if (!rocked) fails.push('firing does not move a man at all');
+  notes.push('gait: stride, bob and flinch all read off the simulation');
+});
+
+/* ---- the weather, and the life that has nothing to do with the war ---- */
+step('the wind blows and the villages are lived in', () => {
+  const v = view();
+  const weather = buildWind();
+  weather.update({ ...v, wind: { a: 0, v: 1 }, clouds: [{ x: 100, y: 200, rx: 300, ry: 200, a: 0.4 }] }, 0);
+  const east = weather.uniforms.uWindDir.value.clone();
+  weather.update({ ...v, wind: { a: Math.PI / 2, v: 1 }, clouds: [] }, 0);
+  if (east.distanceTo(weather.uniforms.uWindDir.value) < 1)
+    fails.push('the wind does not turn when the simulation turns it');
+  if (weather.uniforms.uCloudA.value[0] !== 0) fails.push('a cloud that has gone still darkens the ground');
+
+  // Both patches have to survive being asked for twice: the grass and the trees
+  // outlive the battlefield they were first grown on, and a uniform declared
+  // twice fails to link — which takes the whole 3D view down.
+  const mat = new THREE.MeshLambertMaterial();
+  weather.sway(mat, 1);
+  weather.sway(mat, 1);
+  const shader = {
+    vertexShader: THREE.ShaderLib.lambert.vertexShader,
+    fragmentShader: THREE.ShaderLib.lambert.fragmentShader,
+    uniforms: {},
+  };
+  mat.onBeforeCompile(shader, null);
+  const times = shader.vertexShader.split('uniform float uWindTime;').length - 1;
+  if (times !== 1) fails.push('the wind uniforms are declared ' + times + ' times');
+  if (!shader.vertexShader.includes('instanceMatrix[3]'))
+    fails.push('every tuft would take its phase from the same place and lean as one');
+
+  // The villagers and the birds.
+  const life = buildLife(scene);
+  life.update(v);
+  const seen = life.counts();
+  if (!seen.civs) fails.push('nobody lives in the villages');
+  if (!seen.birds) fails.push('there is not a bird over the whole battlefield');
+  // A farmer on ground nobody of yours can see is not drawn, the same rule the
+  // map plays by — otherwise the enemy's half is mapped by its livestock.
+  life.update({ ...v, eyes: [], viewTeam: 'blue' });
+  const half = life.counts().civs;
+  life.update({ ...v, eyes: [], viewTeam: 'red' });
+  if (half === life.counts().civs && half === seen.civs)
+    fails.push('civilians are drawn on ground nobody can see');
+  notes.push('life: ' + seen.civs + ' villagers, ' + seen.birds + ' birds');
+  life.dispose();
 });
 
 /* ---- what is growing on it ---- */
