@@ -53,10 +53,7 @@ export const HEIGHT_SCALE = 300;
 // still see over it from where the game is played.
 const RELIEF = {
   villages: 1.3,
-  mountains: 1.5,
-  beach: 1.1,
-  city: 0.95,
-  desert: 1.15,
+  ultimate: 1.55,
 };
 
 // Two vertices per cell of the model. The model's cells are 22 units across —
@@ -406,7 +403,7 @@ function waterShader(material) {
  *                battlefield is farmed at all
  * @param map     which battlefield this is, for how much relief it stands in
  */
-export function buildTerrain(terrain, pal, landuse, map) {
+export function buildTerrain(terrain, pal, landuse, map, split) {
   const { TW, TH, TG, W, H } = terrain;
   const base = hexToRgb(pal ? pal[1] : '#43452F');
   const low = hexToRgb(pal ? pal[2] : '#3A3C2B');
@@ -463,6 +460,33 @@ export function buildTerrain(terrain, pal, landuse, map) {
           b2 *= k;
         }
         c = [r, g2, b2];
+      }
+    }
+
+    // Two countries, one river.
+    //
+    // Where a map names a split, the far bank is a different piece of the world:
+    // here, a frozen range against green farming country. It is applied at the
+    // very end and to COLOUR ONLY - the height field, the cover, the parcels and
+    // the woods are all still laid down in mirrored pairs, so the two commanders
+    // are fighting over identical ground and only looking at different weather.
+    // Snow gathers with height, the way it actually does, and thins toward the
+    // water so the banks meet without a seam down the middle of the river.
+    if (split) {
+      const gx = i % TW;
+      const wx = gx * TG;
+      const side = wx < W / 2 ? split.west : split.east;
+      // 0 at the channel, 1 well back from it: nothing changes at the water's
+      // edge, which is what stops the two halves meeting as a hard line.
+      const away = Math.min(1, Math.abs(wx - W / 2) / (W * 0.22));
+      // Snow gathers with height and pasture does not, so the west is weighted
+      // by how high the ground stands and the east is laid on evenly.
+      const rise = side.ground[2] > side.ground[1] ? (0.3 + 0.7 * terrain.height[i]) : 1;
+      const lie = side.tint * away * rise;
+      if (lie > 0.001) {
+        c = [c[0] + (side.ground[0] - c[0]) * lie,
+             c[1] + (side.ground[1] - c[1]) * lie,
+             c[2] + (side.ground[2] - c[2]) * lie];
       }
     }
 
@@ -696,7 +720,10 @@ function buildApron(geo, col, segX, segY, W, H) {
     for (let ch = 0; ch < 3; ch++) {
       const v = col[i * 3 + ch];
       c[k * 6 + ch] = v;
-      c[k * 6 + 3 + ch] = v * 0.58; // and it goes dark as it goes away
+      // ...and it goes to BLACK as it goes away. Outside the battlefield is
+      // black; the apron is what carries the ground into it, so the map runs out
+      // rather than stopping at a bright edge in mid-air.
+      c[k * 6 + 3 + ch] = 0;
     }
     if (k < n - 1) {
       const a = k * 2;

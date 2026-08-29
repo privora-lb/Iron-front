@@ -40,7 +40,7 @@ const { loadGame } = require('./dom.js');
 
 const BR = String.fromCharCode(10);
  const FAST = process.argv.includes('--fast');
-const MAPS = ['villages', 'mountains', 'beach', 'city', 'desert'];
+const MAPS = ['villages', 'ultimate'];
 const MATCH_FRAMES = FAST ? 400 : 1800;
 const CHECKPOINTS = FAST ? [120, 300] : [300, 600, 1200, 1800];
 
@@ -104,7 +104,8 @@ if (boot.loadError) {
 assert(typeof boot.hook('tick') === 'function', 'debug hooks installed', boot.lines + ' lines, ' + Math.round(boot.bytes / 1024) + ' KB');
 assert(typeof boot.hook('hash') === 'function', '__hash() available for determinism checks');
 assert(boot.el('pal').children.length > 0, 'palette built', boot.el('pal').children.length + ' cards');
-assert(boot.el('mapPick').children.length === 5, 'five battlefields offered');
+assert(boot.el('mapPick').children.length === MAPS.length,
+  'every battlefield is offered', MAPS.length + ': ' + MAPS.join(', '));
 assert(boot.frames(30) === 30, '30 idle frames on the start screen');
 assert(boot.fault() === null, 'no draw fault on the start screen', boot.fault());
 
@@ -360,10 +361,9 @@ function world(map, budget) {
   for (const map of MAPS) {
     const g = world(map);
     const r = g.hook('relief')();
-    // Landing Beach shelves down to the sea along one edge, which cannot be
-    // rotationally symmetric; both keeps sit at y = H/2, so it stays fair.
-    const tol = map === 'beach' ? 1.01 : 0.0001;
-    if (r.rotationalError > tol) {
+    // Every theatre now has to be exactly fair under a half turn. Landing
+    // Beach, which shelved to the sea along one edge and could not be, is gone.
+    if (r.rotationalError > 0.0001) {
       problems.push(map + ': halves differ by ' + r.rotationalError + ' - not fair under a 180 turn');
     }
     if (r.mirrorError < 0.05) problems.push(map + ': mirror-symmetric, the reflection line will show');
@@ -647,7 +647,7 @@ for (const map of FAST ? ['villages'] : MAPS) {
 {
   const g = loadGame({ quiet: true });
   g.hook('seed')(13);
-  startMatch(g, 'city', 2000);
+  startMatch(g, 'ultimate', 2000);
   g.hook('tick')(600);
   const before = g.hook('hash')();
   const problems = [];
@@ -747,7 +747,8 @@ function ground(map) {
       problems.push(map + ': open road does not carry armour (' + c.move.slice(0, 3).join('/') + ')');
     }
   }
-  if (metalled < 3) problems.push('only ' + metalled + ' of five battlefields have open road');
+  if (metalled < MAPS.length)
+    problems.push('only ' + metalled + ' of ' + MAPS.length + ' battlefields have open road');
   if (problems.length) bad('every battlefield is laid with roads that carry armour', problems.join(BR));
   else ok('every battlefield is laid with roads that carry armour');
 }
@@ -755,7 +756,7 @@ function ground(map) {
 // A house that comes down leaves ground that behaves like rubble: men shelter
 // in it, armour has to go round.
 {
-  const g = ground('city');
+  const g = ground('ultimate');
   const b = g.hook('aBuilding')();
   const problems = [];
   if (!b) problems.push('the city has no buildings to knock down');
@@ -933,7 +934,7 @@ head('9. RENDERERS');
 {
   const g = loadGame({ quiet: true });
   g.hook('seed')(9);
-  startMatch(g, 'city', 2000);
+  startMatch(g, 'ultimate', 2000);
   g.hook('tick')(300);
   const problems = [];
   const v = g.hook('worldview') ? g.hook('worldview')() : null;

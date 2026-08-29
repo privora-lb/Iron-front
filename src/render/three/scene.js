@@ -72,7 +72,7 @@ export function createScene({ canvas, view }) {
     antialias: true,
     powerPreference: 'high-performance',
   });
-  renderer.setClearColor(0x101218, 1);
+  renderer.setClearColor(0x000000, 1);
   renderer.shadowMap.enabled = true;
   renderer.shadowMap.type = THREE.PCFShadowMap;
   // Light does not clip in the world, and it should not clip here. Without a
@@ -139,7 +139,7 @@ export function createScene({ canvas, view }) {
 
   function buildWorld(v) {
     clearWorld();
-    const built = buildTerrain(v.terrain, v.pal, v.landuse, v.map);
+    const built = buildTerrain(v.terrain, v.pal, v.landuse, v.map, v.split);
     scene.add(built.mesh);
     if (built.apron) scene.add(built.apron);
     const water = buildWater(v.terrain, built.waterY);
@@ -159,7 +159,7 @@ export function createScene({ canvas, view }) {
     if (decals) decals.patch(built.mesh.material);
     world = { ground: built.mesh, apron: built.apron, water, props, hedges, bridges, base, decals };
 
-    scene.fog = new THREE.Fog(0x8fa0ad, 1800, 7000);
+    scene.fog = new THREE.Fog(0x000000, 1800, 7000);
     fog.patchScene(scene);
     worldId = v.worldId;
     treesDown = v.treesDown;
@@ -229,10 +229,23 @@ export function createScene({ canvas, view }) {
     sky.intensity = 0.26 + 0.62 * light;
     sky.color.setRGB(0.5 + 0.24 * light, 0.6 + 0.24 * light, 0.78 + 0.22 * light);
     if (scene.fog) {
-      const haze = v.night ? 0x0d1420 : 0x8fa0ad;
+      // Outside the battlefield is BLACK.
+      //
+      // Asked for directly, and it is the right call: the apron, the haze and
+      // the sky between them made a pale surround that the eye kept reading as
+      // more country, so the map looked like a slab of scenery floating in more
+      // scenery. Against black it reads as the thing you are fighting over and
+      // nothing else, and the edge of the world stops being a place you wonder
+      // about. The haze the ground fades into goes with it, so land running out
+      // past the edge goes into the dark rather than into a grey band.
+      const haze = 0x000000;
       scene.fog.color.setHex(haze);
       fog.setHaze(haze);
       renderer.setClearColor(haze, 1);
+      // The sky goes with it. There is no weather to look at outside the
+      // battlefield any more, and a lit dome over a black surround reads as a
+      // bug rather than as a sky.
+      sky3.mesh.visible = false;
       sky3.update(camera, haze, sun.position, [fx, gy, fy], light);
       // Aerial perspective, not a smear. Tied only to how far back the camera
       // stands, closing in on the field put the haze a hundred metres from the

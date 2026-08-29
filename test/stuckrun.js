@@ -15,7 +15,7 @@ function arg(name, dflt) {
 }
 
 const seed = parseInt(arg('seed', '12345'), 10);
-const map = arg('map', 'city');
+const map = arg('map', 'ultimate');
 const budget = parseInt(arg('budget', '999999'), 10);
 const checks = String(arg('checks', '60,300,900,1800'))
   .split(',')

@@ -10,7 +10,7 @@
 //   npm run shot                                  villages, midday, full map
 //   node test/shot.js out.png --map city --hour night --zoom 3
 //
-//   --map    villages | mountains | beach | city | desert
+//   --map    ultimate | villages
 //   --hour   dawn | day | dusk | night
 //   --ticks  how far into the battle to run before the frame is taken
 //   --zoom   1 is the whole map, which is where a match starts

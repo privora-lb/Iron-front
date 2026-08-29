@@ -409,32 +409,29 @@ function buildRelief() {
 // which keeps both keeps on equal ground.
 function shapeLandform() {
   const M = mapType;
-  // the outer two passes are a rotation of each other, the middle one is its own
-  const s1 = M === 'mountains' ? rnd(.10, .26) : 0;
-  const saddles = M === 'mountains' ? [s1, .5, 1 - s1] : null;
   for (let gy = 0; gy < TH; gy++)
     for (let gx = 0; gx < TW; gx++) {
       const i = gy * TW + gx, u = gx / (TW - 1), v = gy / (TH - 1);
       const c = Math.abs(u - .5) * 2;          // 0 on the centre line, 1 at the side edges
+      const e = Math.abs(v - .5) * 2;          // 0 on the middle row, 1 at top and bottom
       let h = hGrid[i];
-      if (M === 'villages') h = h * (.44 + .46 * c) + .13 * c;         // a broad valley
-      else if (M === 'mountains') {
-        let ridge = (1 - c) * (1 - c);
-        for (const sy of saddles) {            // three passes cut through the spine
-          const d = Math.abs(v - sy);
-          if (d < .085) ridge *= .10 + .90 * (d / .085);
-        }
-        h = h * .48 + ridge * .78 + .08;
-      } else if (M === 'beach') h = h * (.30 + .40 * (1 - v)) + .42 * (1 - v) * (1 - v);
-      else if (M === 'city') h = h * .32 + .14;                        // a flat river terrace
-      else h = h * .46 + .20 * c * c;                                  // desert flat, edges lift
+      if (M === 'ultimate') {
+        // A valley running the length of the map with a range closing it in at
+        // the top and the bottom, and the ground lifting away from the water on
+        // both banks. The ranges are what make it a corridor: the fighting is
+        // funnelled onto the crossings rather than spread over open country,
+        // which is the shape the whole map is for. Symmetric in both axes, so
+        // neither commander is given the easier ground.
+        const wall = Math.max(0, (e - .58) / .42);
+        h = h * (.34 + .34 * c) + .14 * c + wall * wall * .92;
+      }
+      else h = h * (.44 + .46 * c) + .13 * c;                          // a broad valley
       hGrid[i] = clamp(h, 0, 1);
     }
   // Renormalise, then set how much relief this piece of country actually has.
   // Without this a flat map never reaches the high-ground thresholds at all and
   // the sight and damage bonuses are dead weight on it.
-  const RELIEF = { villages:[.06, .86], mountains:[.05, .95], beach:[.03, .82],
-                   city:[.07, .52], desert:[.05, .64] }[M] || [.05, .8];
+  const RELIEF = { villages:[.06, .86], ultimate:[.05, .95] }[M] || [.05, .8];
   let lo = 1e9, hi = -1e9;
   for (let i = 0; i < hGrid.length; i++) { const h = hGrid[i]; if (h < lo) lo = h; if (h > hi) hi = h; }
   const span = (hi - lo) || 1;
@@ -1067,11 +1064,8 @@ function genTerrain(){
   wet = hydrology(hGrid, TW, TH).moisture;
   towns = []; routes = [];
 
-  if(mapType==='villages') genFarmland();
-  else if(mapType==='mountains') genMountains();
-  else if(mapType==='beach') genBeach();
-  else if(mapType==='city') genCity();
-  else genDesert();
+  if(mapType==='ultimate') genUltimate();
+  else genFarmland();
 
   feats=feats.filter(f=>f.type!=='hill');   // relief comes from the height field now
   for(const f of feats){                   // nothing sits where it could not have grown
@@ -1132,9 +1126,7 @@ function genTerrain(){
 
   // ---- weather, wildlife, hearth smoke ----
   wind={a:rnd(0,6.28),v:rnd(.7,1.5)};
-  sky = mapType==='desert' ? (R()<.55?'dust':'clear')
-      : mapType==='beach'  ? (R()<.5?'spray':'clear')
-      : mapType==='mountains' ? (R()<.6?'snow':'clear')
+  sky = mapType==='ultimate' ? (R()<.55?'snow':'clear')
       : (R()<.45?'rain':'clear');
   weather=[]; rings=[]; plumes=[];
   clouds=[];
@@ -1264,7 +1256,6 @@ function village(cx,cy,houses,rx,ry){
   // worked land on the outskirts: an orchard one side, crop plots the other.
   // Ruined city blocks are not farmed.
   const oside=R()<.5?1:-1;
-  if(mapType==='city') return;
   feats.push({type:'orchard',x:cx-sa*oside*(RY+rnd(70,110)),y:cy+ca*oside*(RY+rnd(70,110)),
     rx:rnd(70,105),ry:rnd(46,70),rot:road});
   const plots=2+((R()*3)|0);
@@ -1322,139 +1313,48 @@ function genFarmland(){
     village(W-vx,H-vy,6+((R()*4)|0),178,130);
   }
 }
-function genMountains(){
-  // ridge walls along the sector lines, leaving the passes open
-  for(const dy of div){
-    for(let x=40;x<W-40;x+=70){
-      if(GAPS.some(g=>Math.abs(g[0]-dy)<2&&Math.abs(g[1]-x)<170)) continue;
-      const rx=rnd(58,88),ry=rnd(46,72),y=dy+rnd(-20,20);
-      feats.push({type:'hill',x,y,rx:rx*1.5,ry:ry*1.5,rot:rnd(0,3.14)});
-      feats.push({type:'rocks',x,y,rx,ry,rot:rnd(0,3.14)});
-      blob(x,y,rx*.62,ry*.62,CLIFF);                 // sheer rock, impassable
-    }
-  }
+// Ultimate X War: a frozen range on one bank, green country on the other, and
+// one great bridge between them.
+//
+// The two countries are a LOOK. Everything that decides a fight - where the high
+// ground is, how thick the woods are, what a crossing costs - is laid down in
+// mirrored pairs exactly as it is on the river villages, because a battlefield
+// that gives one side better country than the other is decided by the map. What
+// differs across the water is snow, and the kind of tree that grows in it.
+function genUltimate(){
+  // Woods along the sector lines, kept off the water so the crossings stay open.
+  laneBelts(()=>R()<.66?'forest':'rocks',124,true);
   for(const cy of laneY){
-    for(let i=0;i<5;i++){
-      const x=rnd(300,W/2-260),y=clamp(cy+rnd(-190,190),90,H-90);
-      const rx=rnd(150,250),ry=rnd(90,150),rot=rnd(0,3.14);
-      feats.push({type:'hill',x,y,rx,ry,rot}); feats.push({type:'hill',x:W-x,y:H-y,rx,ry,rot:-rot});
-      feats.push({type:'rocks',x,y,rx:rx*.5,ry:ry*.5,rot});
-      feats.push({type:'rocks',x:W-x,y:H-y,rx:rx*.5,ry:ry*.5,rot:-rot});
+    const n=3+Math.floor(R()*2);
+    for(let i=0;i<n;i++){
+      const type=['forest','hill','forest','rocks','hill'][Math.floor(R()*5)];
+      const x=rnd(300,W/2-300),y=clamp(cy+rnd(-150,150),90,H-90);
+      const rx=rnd(140,250),ry=rnd(84,145),rot=rnd(0,3.14);
+      feats.push({type,x,y,rx,ry,rot}); feats.push({type,x:W-x,y:H-y,rx,ry,rot:-rot});
     }
-    const px=rnd(700,W/2-380);
-    feats.push({type:'forest',x:px,y:cy+rnd(-70,70),rx:rnd(90,150),ry:rnd(60,100),rot:rnd(0,3)});
-    feats.push({type:'forest',x:W-px,y:H-cy+rnd(-70,70),rx:rnd(90,150),ry:rnd(60,100),rot:rnd(0,3)});
+    // A shoulder of high ground overlooking each sector, on both banks.
+    const hx=rnd(500,W/2-360);
+    const hy=cy+rnd(-70,70), hrx=rnd(190,260), hry=rnd(120,160), hrot=rnd(0,3.14);
+    feats.push({type:'hill',x:hx,y:hy,rx:hrx,ry:hry,rot:hrot});
+    feats.push({type:'hill',x:W-hx,y:H-hy,rx:hrx,ry:hry,rot:-hrot});
   }
-  const vx=rnd(760,W/2-460);                          // a mountain hamlet each side
-  village(vx,laneY[1]+rnd(-60,60),5,150,110);
-  village(W-vx,H-laneY[1]+rnd(-60,60),5,150,110);
-}
-function genBeach(){
-  for(let gy=0;gy<TH;gy++) for(let gx=0;gx<TW;gx++){
-    const y=gy*TG+TG/2,i=gy*TW+gx;
-    if(y>H-70) tGrid[i]|=WATER;                       // the sea along the southern edge
-    else if(y>H-130) tGrid[i]|=FORD;                  // surf line
+  // Hamlets grown up at the crossings, where a road meets the water - the two
+  // that matter most on a map whose whole argument is the bridges.
+  for(const c of CROSS){
+    const off=rnd(300,430);
+    const vy=clamp(c.y+rnd(-90,90),150,H-150);
+    village(clamp(riverXAt(vy)-off,240,W-240),vy,5+((R()*4)|0),168,124);
+    village(clamp(riverXAt(H-vy)+off,240,W-240),H-vy,5+((R()*4)|0),168,124);
   }
-  for(const cy of [laneY[0],laneY[1]]){             // dune ridges
-    for(let i=0;i<5;i++){
-      const x=rnd(250,W/2-240),y=clamp(cy+rnd(-130,130),90,H-220);
-      const rx=rnd(160,260),ry=rnd(60,100),rot=rnd(-.4,.4);
-      feats.push({type:'hill',x,y,rx,ry,rot}); feats.push({type:'hill',x:W-x,y:H-y,rx,ry,rot:-rot});
+  // Rock along the foot of the ranges, top and bottom, so the walls read as
+  // rock rather than as green hills that happen to be steep.
+  for(const dy of [H*0.06,H*0.94]){
+    for(let x=200;x<W-200;x+=260){
+      feats.push({type:'rocks',x,y:dy+rnd(-40,40),rx:rnd(120,190),ry:rnd(70,110),rot:rnd(0,3.14)});
     }
-  }
-  laneBelts(()=>R()<.5?'rocks':'hill',150,true);
-  for(let i=0;i<7;i++){                               // beach obstacles and bunkers
-    const x=rnd(300,W/2-300),y=rnd(H*.62,H-190);
-    buildings.push({x,y,w:rnd(34,50),h:rnd(26,36),rot:rnd(-.2,.2),bunker:true});
-    buildings.push({x:W-x,y:H-y,w:rnd(34,50),h:rnd(26,36),rot:rnd(-.2,.2),bunker:true});
-  }
-  const vx=rnd(700,W/2-420);                          // a seaside village above the dunes
-  village(vx,laneY[0],6,170,120); village(W-vx,H-laneY[0],6,170,120);
-  for(let i=0;i<6;i++){                               // scrub above the tide line
-    const x=rnd(300,W/2-280),y=rnd(120,H*.5);
-    feats.push({type:'forest',x,y,rx:rnd(70,120),ry:rnd(50,90),rot:rnd(0,3)});
-    feats.push({type:'forest',x:W-x,y:H-y,rx:rnd(70,120),ry:rnd(50,90),rot:rnd(0,3)});
   }
 }
-function genCity(){
-  // ---- the main city: a compact core straddling the canal on the centre lane ----
-  const coreX0=W*.34,coreX1=W*.66,coreY0=laneY[1]-620,coreY1=laneY[1]+620;
-  const roadX=360,roadY=300;                       // wide avenues between the blocks
-  for(let bx=coreX0;bx<coreX1;bx+=roadX){
-    for(let by=coreY0;by<coreY1;by+=roadY){
-      if(Math.abs(bx-W/2)<130*FS) continue;        // canal banks stay clear
-      if(R()<.18) continue;              // an empty lot or a park
-      const cx=bx+rnd(-18,18),cy=by+rnd(-16,16);
-      blob(cx,cy,110,88,STONE);
-      const n=2+((R()*2)|0);             // only a couple of blocks per lot
-      for(let k=0;k<n;k++)
-        buildings.push({x:cx+(k%2?58:-58)+rnd(-10,10),y:cy+(k>1?54:-54)+rnd(-10,10),
-          w:rnd(62,86),h:rnd(38,54),rot:0,city:true});
-      if(R()<.28) walls.push({team:'none',fixed:true,x:cx+rnd(-90,90),y:cy+rnd(-70,70),
-        len:70,hp:9e9,max:9e9,dead:false,rubble:true});
-      if(R()<.3) feats.push({type:'rocks',x:cx+rnd(-70,70),y:cy+rnd(-50,50),
-        rx:rnd(34,58),ry:rnd(26,42),rot:rnd(0,3)});
-    }
-  }
-  // ---- outskirts: small villages and lone houses along the wing lanes ----
-  for(const li of [0,2]){
-    const cy=laneY[li];
-    for(let i=0;i<3;i++){
-      const vx=rnd(600,W/2-500)+i*140;
-      const vy=clamp(cy+rnd(-220,220),140,H-140);
-      village(vx,vy,3,110,80);
-      village(W-vx,H-vy,3,110,80);
-    }
-    for(let x=460;x<W/2-300;x+=rnd(420,760)){      // farmhouses strung along the road
-      const y=clamp(cy+rnd(-150,150),120,H-120);
-      buildings.push({x,y,w:rnd(42,60),h:rnd(32,44),rot:rnd(-.3,.3)});
-      buildings.push({x:W-x,y:H-y,w:rnd(42,60),h:rnd(32,44),rot:rnd(-.3,.3)});
-      if(R()<.5){
-        buildings.push({x:x+rnd(-70,70),y:y+rnd(50,90),w:rnd(30,44),h:rnd(24,34),rot:rnd(-.3,.3)});
-        buildings.push({x:W-x+rnd(-70,70),y:H-y-rnd(50,90),w:rnd(30,44),h:rnd(24,34),rot:rnd(-.3,.3)});
-      }
-    }
-    for(let i=0;i<3;i++){                          // fields, hedges and copses between them
-      const x=rnd(420,W/2-360),y=clamp(cy+rnd(-240,240),120,H-120);
-      feats.push({type:'forest',x,y,rx:rnd(90,150),ry:rnd(60,105),rot:rnd(0,3)});
-      feats.push({type:'forest',x:W-x,y:H-y,rx:rnd(90,150),ry:rnd(60,105),rot:rnd(0,3)});
-    }
-    const hx=rnd(520,W/2-420);
-    feats.push({type:'hill',x:hx,y:cy+rnd(-120,120),rx:rnd(170,240),ry:rnd(110,150),rot:rnd(0,3)});
-    feats.push({type:'hill',x:W-hx,y:cy+rnd(-120,120),rx:rnd(170,240),ry:rnd(110,150),rot:rnd(0,3)});
-  }
-  feats.push({type:'hill',x:W*.22,y:laneY[1],rx:230,ry:140,rot:0});
-  feats.push({type:'hill',x:W*.78,y:laneY[1],rx:230,ry:140,rot:0});
-}
-function genDesert(){
-  for(const cy of laneY){                            // long dunes
-    for(let i=0;i<4;i++){
-      const x=rnd(280,W/2-260),y=clamp(cy+rnd(-140,140),90,H-90);
-      const rx=rnd(210,320),ry=rnd(70,110),rot=rnd(-.35,.35);
-      feats.push({type:'hill',x,y,rx,ry,rot}); feats.push({type:'hill',x:W-x,y:H-y,rx,ry,rot:-rot});
-    }
-    const rx2=rnd(420,W/2-340);                       // rocky outcrops
-    feats.push({type:'rocks',x:rx2,y:cy+rnd(-90,90),rx:rnd(90,150),ry:rnd(60,100),rot:rnd(0,3)});
-    feats.push({type:'rocks',x:W-rx2,y:cy+rnd(-90,90),rx:rnd(90,150),ry:rnd(60,100),rot:rnd(0,3)});
-  }
-  laneBelts('rocks',190,false);
-  // the dry wadi: a soft-sand channel down the middle, crossable but slow
-  for(let gy=0;gy<TH;gy++){
-    const y=gy*TG+TG/2,rx=riverXAt(y);
-    for(let gx=0;gx<TW;gx++){
-      const x=gx*TG+TG/2,d=Math.abs(x-rx),i=gy*TW+gx;
-      if(d<52){ eGrid[i]=0; tGrid[i]&=~(WOOD|ROCK); tGrid[i]|=MARSH; }
-    }
-  }
-  const ox=rnd(620,W/2-420);                          // oasis and a walled compound
-  for(const cx of [ox,W-ox]){
-    const oy=laneY[1]+rnd(-120,120);
-    feats.push({type:'forest',x:cx,y:oy,rx:120,ry:90,rot:rnd(0,3)});
-    village(cx,oy,4,140,100);
-  }
-  const vx=rnd(800,W/2-460);
-  village(vx,laneY[2],5,160,115); village(W-vx,H-laneY[2],5,160,115);
-}
+
 function bakeTerrain(){
   const g0=document.createElement('canvas'); g0.width=Math.ceil(W*BAKE); g0.height=Math.ceil(H*BAKE);
   const g=g0.getContext('2d');
@@ -1467,34 +1367,11 @@ function bakeTerrain(){
   g.drawImage(reliefLayer(),0,0,W,H);
   // The worked countryside: a patchwork of plots with hedges and ploughing,
   // laid down before anything is stamped on it so woods, villages and water
-  // sit ON the land rather than beside it. Skipped where farming would be
-  // absurd - nobody ploughs a city block or a dune field.
-  if(mapType!=='city'&&mapType!=='desert'&&mapType!=='beach'){
-    landuse=makeLanduse(matchSeed,W,H,{minSide:mapType==='mountains'?420:300});
-    paintLanduse(g,landuse,MAPS[mapType].pal[0],{alpha:mapType==='mountains'?.34:.5});
-  } else landuse=null;
-  if(mapType==='city'){                                   // wide avenues through the core
-    const x0=W*.34,x1=W*.66,y0=laneY[1]-620,y1=laneY[1]+620;
-    g.strokeStyle='rgba(30,30,28,.38)'; g.lineWidth=46;
-    for(let x=x0;x<=x1;x+=360){ g.beginPath(); g.moveTo(x-180,y0-160); g.lineTo(x-180,y1+160); g.stroke(); }
-    for(let y=y0;y<=y1;y+=300){ g.beginPath(); g.moveTo(x0-200,y-150); g.lineTo(x1+200,y-150); g.stroke(); }
-    g.strokeStyle='rgba(206,200,170,.18)'; g.lineWidth=2.6; g.setLineDash([26,26]);
-    for(let x=x0;x<=x1;x+=360){ g.beginPath(); g.moveTo(x-180,y0-160); g.lineTo(x-180,y1+160); g.stroke(); }
-    for(let y=y0;y<=y1;y+=300){ g.beginPath(); g.moveTo(x0-200,y-150); g.lineTo(x1+200,y-150); g.stroke(); }
-    g.setLineDash([]);
-    g.strokeStyle='rgba(120,106,74,.20)'; g.lineWidth=34;   // roads out to the villages
-    for(const cy of [laneY[0],laneY[2]]){
-      g.beginPath(); g.moveTo(0,cy+rnd(-20,20));
-      g.bezierCurveTo(W*.3,cy+rnd(-50,50),W*.7,cy+rnd(-50,50),W,cy+rnd(-20,20)); g.stroke();
-    }
-    g.beginPath(); g.moveTo(0,laneY[1]); g.lineTo(W,laneY[1]); g.stroke();
-  }
-  if(mapType==='desert'||mapType==='beach'){              // wind ripples in the sand
-    g.strokeStyle=mapType==='desert'?'rgba(226,206,152,.13)':'rgba(226,214,178,.14)';
-    g.lineWidth=2;
-    for(let i=0;i<420;i++){ const x=rnd(0,W),y=rnd(0,H);
-      g.beginPath(); g.moveTo(x-26,y); g.quadraticCurveTo(x,y-rnd(3,8),x+26,y); g.stroke(); }
-  }
+  // sit ON the land rather than beside it. Both theatres are worked country, so
+  // both are parcelled; the frozen bank is parcelled more coarsely, because a
+  // hill farm above the snow line is not laid out like a river meadow.
+  landuse=makeLanduse(matchSeed,W,H,{minSide:mapType==='ultimate'?360:300});
+  paintLanduse(g,landuse,MAPS[mapType].pal[0],{alpha:mapType==='ultimate'?.42:.5});
   for(let i=0;i<620;i++){ const x=rnd(0,W),y=rnd(0,H),r=rnd(34,150);
     g.fillStyle=R()<.5?M.mottle[0]:M.mottle[1];
     g.beginPath(); g.ellipse(x,y,r,r*rnd(.35,.7),rnd(0,3.14),0,6.28); g.fill(); }
@@ -1517,8 +1394,8 @@ function bakeTerrain(){
     g.beginPath(); g.ellipse(x,y,r,r*vr(.5,1),0,0,6.28); g.fill();
   }
   g.globalAlpha=1;
-  if(mapType!=='city'){
-    g.strokeStyle=mapType==='desert'?'rgba(150,128,84,.20)':'rgba(120,106,74,.18)';
+  {
+    g.strokeStyle='rgba(120,106,74,.18)';
     g.lineWidth=30; g.lineCap='round';
     for(const cy of laneY){ g.beginPath(); g.moveTo(0,cy+rnd(-20,20));
       g.bezierCurveTo(W*.3,cy+rnd(-40,40),W*.7,cy+rnd(-40,40),W,cy+rnd(-20,20)); g.stroke(); }
@@ -1613,29 +1490,6 @@ function bakeTerrain(){
   // the canopy is painted from the real trunks, so felling one can erase it
   for(const t of trees) paintCrown(c,t);
 
-  if(mapType==='beach'){                                  // sea and surf
-    const sg=g.createLinearGradient(0,H-190,0,H);
-    sg.addColorStop(0,'rgba(120,150,146,.25)'); sg.addColorStop(.34,'#4E7C82'); sg.addColorStop(1,'#2F5A63');
-    g.fillStyle=sg; g.fillRect(0,H-190,W,190);
-    g.fillStyle='rgba(232,240,236,.5)';
-    for(let i=0;i<160;i++){ const x=rnd(0,W),y=H-130+rnd(-16,16);
-      g.beginPath(); g.ellipse(x,y,rnd(14,40),rnd(2,4),0,0,6.28); g.fill(); }
-    g.fillStyle='rgba(226,214,178,.35)'; g.fillRect(0,H-136,W,10);
-  }
-  if(mapType==='desert'){                                  // the dry wadi bed
-    g.save(); g.beginPath();
-    for(let y=0;y<=H;y+=20) g.lineTo(riverXAt(y)-52,y);
-    for(let y=H;y>=0;y-=20) g.lineTo(riverXAt(y)+52,y);
-    g.closePath(); g.clip();
-    g.fillStyle='rgba(206,182,128,.45)'; g.fillRect(0,0,W,H);
-    g.strokeStyle='rgba(150,126,80,.35)'; g.lineWidth=2;
-    for(let i=0;i<120;i++){ const y=rnd(0,H),x=riverXAt(y)+rnd(-46,46);
-      g.beginPath(); g.moveTo(x-20,y); g.quadraticCurveTo(x,y-4,x+20,y); g.stroke(); }
-    g.restore();
-    g.strokeStyle='rgba(120,98,58,.4)'; g.lineWidth=3;
-    g.beginPath(); for(let y=0;y<=H;y+=16) g.lineTo(riverXAt(y)-52,y); g.stroke();
-    g.beginPath(); for(let y=0;y<=H;y+=16) g.lineTo(riverXAt(y)+52,y); g.stroke();
-  }
   if(MAPS[mapType].water==='none'){ ground=g0; canopy=cn; canopyCtx=c; makeDecal(); return; }
   // river water
   const path=new Path2D();
@@ -1709,7 +1563,7 @@ function drawStructures(g,c){
         for(let i=0;i<7;i++) g.fillRect(rnd(-b.w/2,b.w/2-8),rnd(-b.h/2,b.h/2-6),rnd(6,14),rnd(5,10)); }
       g.strokeStyle='rgba(26,24,20,.6)'; g.lineWidth=1.4; g.strokeRect(-b.w/2,-b.h/2,b.w,b.h);
     } else {                                        // village house
-      const sand=mapType==='desert'||mapType==='beach';
+      const sand=false;
       g.fillStyle=sand?'#C0A97A':'#8E8574'; g.fillRect(-b.w/2,-b.h/2,b.w,b.h);
       g.fillStyle=sand?'#A78F62':'#736A59'; g.fillRect(-b.w/2,-b.h/2,b.w,b.h*.42);
       g.fillStyle=sand?'#8A7047':'#5A4A38'; g.fillRect(-b.w/2,-b.h/2-3,b.w,5);
@@ -3948,7 +3802,8 @@ function stateHash(){
 // this would put the two machines in a match on different courses.
 function worldView(){
   return {
-    terrain, cam, pal:MAPS[mapType].pal, map:mapType, landuse, worldId, treesDown, ruins:ruinsN,
+    terrain, cam, pal:MAPS[mapType].pal, map:mapType, split:MAPS[mapType].split||null,
+    landuse, worldId, treesDown, ruins:ruinsN,
     squads, soldiers, buildings, trees, walls, castles, bases, shots, parts, bodies,
     selected, phase, clock, tod, sun, dayLight, night,
     // The fog of war, the marks in the ground and the dead: three things the
@@ -5371,7 +5226,7 @@ function drawBuildings(){
       ctx.fillStyle='rgba(16,14,10,.85)'; ctx.fillRect(-hw+5,hh+hgt*.35,b.w-10,4.5);
     }
     // roof, taking the colour of whoever holds the place
-    const base=b.bunker?'#6E6E60':b.city?'#7C7468':(mapType==='desert'||mapType==='beach'?'#C0A97A':'#8E8574');
+    const base=b.bunker?'#6E6E60':b.city?'#7C7468':'#8E8574';
     ctx.fillStyle=base;
     ctx.fillRect(-hw,-hh,b.w,b.h);
     if(b.hold&&b.tint>0){
@@ -5424,8 +5279,6 @@ function drawMini(g){
     g.strokeStyle=MAPS[mapType].water==='canal'?'rgba(80,120,132,.85)':'rgba(90,140,150,.85)';
     g.lineWidth=Math.max(2,52*s);
     g.beginPath(); for(let yy=0;yy<=H;yy+=40) g.lineTo(x+riverXAt(yy)*s,y+yy*s); g.stroke();
-    if(mapType==='beach'){ g.lineWidth=Math.max(2,150*s);
-      g.beginPath(); g.moveTo(x,y+(H-95)*s); g.lineTo(x+mw,y+(H-95)*s); g.stroke(); }
   } else {
     g.strokeStyle='rgba(190,168,110,.5)'; g.lineWidth=Math.max(2,90*s);
     g.beginPath(); for(let yy=0;yy<=H;yy+=40) g.lineTo(x+riverXAt(yy)*s,y+yy*s); g.stroke();

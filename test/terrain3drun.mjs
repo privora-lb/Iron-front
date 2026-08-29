@@ -114,10 +114,10 @@ ok(
   // How MUCH higher is a matter of taste, and it is settled by looking: too
   // tall and the ridge fills the screen at the zoom the game is played from.
   // The order is not a matter of taste.
-  ok(reliefOf('mountains') > reliefOf('villages'), 'mountains should stand above farmland',
-    [reliefOf('mountains'), reliefOf('villages')]);
-  ok(reliefOf('mountains') > reliefOf('city') * 1.4, 'a river terrace should not stand as high as a range',
-    [reliefOf('city'), reliefOf('mountains')]);
+  ok(reliefOf('ultimate') > reliefOf('villages'), 'a range should stand above farmland',
+    [reliefOf('ultimate'), reliefOf('villages')]);
+  ok(reliefOf('ultimate') > HEIGHT_SCALE, 'the range map should stand above the plain scale',
+    [reliefOf('ultimate'), HEIGHT_SCALE]);
   ok(reliefOf('nowhere-in-particular') === HEIGHT_SCALE, 'an unknown battlefield gets the plain scale');
 }
 
@@ -193,9 +193,9 @@ ok(Number.isFinite(groundY(t, 1e6, 1e6)), 'height off the bottom-right corner sh
   for (let i = 0; i < t2.height.length; i++) t2.height[i] = 0.5;
   const river = [];
   for (let gy = 0; gy < t2.TH; gy++) { const i = gy * t2.TW + 8; t2.flags[i] = WATER; river.push(i); }
-  const b2 = buildTerrain(t2, null, null, 'city');
+  const b2 = buildTerrain(t2, null, null, 'villages');
   const p2 = b2.mesh.geometry.attributes.position;
-  const lift2 = reliefOf('city');
+  const lift2 = reliefOf('villages');
   const bedV = ((river[2] / t2.TW) | 0) * SUBDIV * ((t2.TW - 1) * SUBDIV + 1) + 8 * SUBDIV;
   ok(p2.getY(bedV) < 0.5 * lift2, 'the river bed should be cut below the land');
   ok(b2.waterY > p2.getY(bedV), 'the water should sit above its own bed', [b2.waterY, p2.getY(bedV)]);
@@ -203,7 +203,7 @@ ok(Number.isFinite(groundY(t, 1e6, 1e6)), 'height off the bottom-right corner sh
   // Nothing hummocks a river bed: the water is a flat sheet and anything that
   // rose through it would show as ground standing in mid-stream.
   ok(near(p2.getY(bedV), 0.5 * lift2 - 9, 0.01), 'the river bed should be flat, not hummocked', p2.getY(bedV));
-  const dry = buildTerrain(makeTerrain(400, 400, TG), null, null, 'city');
+  const dry = buildTerrain(makeTerrain(400, 400, TG), null, null, 'villages');
   ok(!buildWater(t2, dry.waterY).visible, 'a battlefield with no water should have no water plane');
 }
 

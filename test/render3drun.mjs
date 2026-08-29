@@ -504,7 +504,7 @@ step('the field boundaries stand up', () => {
 // ---- a second battlefield, because a new match rebuilds the world ----
 step('starting a second battle', () => {
   g.el('again') && g.el('again').click();
-  g.all('#mapPick [data-map="city"]')[0].click();
+  g.all('#mapPick [data-map="ultimate"]')[0].click();
   g.all('#startVeil [data-budget="2000"]')[0].click();
   g.el('autoDep').click();
   g.el('startBattle').click();
