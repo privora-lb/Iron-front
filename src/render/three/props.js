@@ -198,7 +198,16 @@ export function buildProps(scene, terrain, view) {
         }
         const gy = groundY(t, tr.x, tr.y);
         const s = tr.s;
-        const k = kindOf(i);
+        // Which tree grows here. On a map whose two banks are different country
+        // the bank decides it - firs in the snow, broadleaves in the pasture -
+        // and that is most of what tells the two halves apart at the distance
+        // this is played from. Elsewhere it is a stable per-tree scatter.
+        let k = kindOf(i);
+        if (v.split) {
+          const want = (tr.x < t.W / 2 ? v.split.west : v.split.east).fir;
+          if (want >= 1) k = Math.min(k, 0.5);          // a wood of firs
+          else if (want <= 0) k = Math.max(k, 0.62);    // a wood of broadleaves
+        }
         const lean = (k - 0.5) * 0.1;                   // nothing grows dead straight
         place(trunks, i, tr.x, gy, tr.y, i * 0.7, s * 0.5, s * (1 + k * 0.5), s * 0.5);
         const g = (tr.gr || 90) / 255;

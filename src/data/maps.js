@@ -18,8 +18,8 @@ export const MAPS={
     // snow and bare rock, the east into pasture. Both banks are tinted, not just
     // one - leaving the far side untouched gave two shades of the same country
     // rather than two countries.
-    split:{west:{tint:.97,ground:[0.88,0.91,0.96]},
-           east:{tint:.88,ground:[0.26,0.40,0.16]}}},
+    split:{west:{tint:1,ground:[1,1,1],fir:1},
+           east:{tint:.9,ground:[0.20,0.36,0.12],fir:0}}},
   villages:{name:'River Villages',water:'river',
     blurb:'Farmland, woods and two hamlets astride a river',
     pal:['#43452F','#4A4B34','#3A3C2B'],mottle:['rgba(104,102,66,.11)','rgba(52,54,38,.10)'],

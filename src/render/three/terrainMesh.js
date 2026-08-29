@@ -481,7 +481,10 @@ export function buildTerrain(terrain, pal, landuse, map, split) {
       const away = Math.min(1, Math.abs(wx - W / 2) / (W * 0.22));
       // Snow gathers with height and pasture does not, so the west is weighted
       // by how high the ground stands and the east is laid on evenly.
-      const rise = side.ground[2] > side.ground[1] ? (0.3 + 0.7 * terrain.height[i]) : 1;
+      // Snow gathers with height, but it must not vanish in the valley: at a
+      // floor of three tenths the whole west bank came out a mid grey and the
+      // two countries read as two shades of the same one.
+      const rise = side.ground[2] > side.ground[1] ? (0.62 + 0.38 * terrain.height[i]) : 1;
       const lie = side.tint * away * rise;
       if (lie > 0.001) {
         c = [c[0] + (side.ground[0] - c[0]) * lie,
