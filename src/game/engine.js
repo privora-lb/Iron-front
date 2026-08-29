@@ -543,25 +543,21 @@ function planCrossings() {
   let mid = R() < .5 ? 'bridge' : 'ford';
   if (outer === 'none') mid = R() < .72 ? 'bridge' : 'ford';   // the only way across
   else if (R() < .22) mid = 'none';                            // two flanks, a hard centre
-  // There is ALWAYS at least one road bridge.
+  // Three crossings: one north, one in the middle, one south, and every one of
+  // them a road bridge.
   //
-  // When the kinds were rolled freely, a good many battlefields came out with
-  // nothing but fords on them - and a ford is a shallow place, not a structure,
-  // so it is built as a stone apron and a line of posts and nothing stands up
-  // out of the water at all. Played, that reads as "the bridges are gone",
-  // which is exactly what it was reported as. A bridge is the landmark the
-  // whole crossing fight is named after; every field gets one.
-  if (outer !== 'bridge' && mid !== 'bridge') { if (mid === 'none') outer = 'bridge'; else mid = 'bridge'; }
-  const put = (y, type) => ({ y, type, hw: type === 'bridge' ? wide() : narrow() });
-  CROSS = [];
-  if (outer !== 'none') {
-    const hw = outer === 'bridge' ? wide() : narrow();
-    CROSS.push({ y: yOut, type: outer, hw });
-    CROSS.push({ y: H - yOut, type: outer, hw });        // the same crossing, mirrored
-  }
-  if (mid !== 'none') CROSS.push(put(H / 2, mid));
-  if (!CROSS.length) CROSS.push(put(H / 2, 'bridge'));   // there is always a way over
-  CROSS.sort((a, b) => a.y - b.y);
+  // They were rolled - two or three of them, bridge or ford or nothing - and
+  // played that gave battlefields with no bridge on them at all, because a ford
+  // is built as a stone apron with nothing standing out of the water. Asked for
+  // directly: one up, one down, one between them. The middle sits on the centre
+  // line and the outer two are a mirrored pair, which is what keeps the ground
+  // fair under a half turn.
+  const hwOut = wide();
+  CROSS = [
+    { y: yOut, type: 'bridge', hw: hwOut },
+    { y: H / 2, type: 'bridge', hw: wide() },
+    { y: H - yOut, type: 'bridge', hw: hwOut },
+  ];
 }
 
 // Gameplay still sees four elevation steps, so slopeMul, the sight bonus and the

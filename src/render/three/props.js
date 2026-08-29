@@ -275,17 +275,22 @@ export function buildProps(scene, terrain, view) {
           continue;
         }
         // A gable or a hip, and a chimney on about half of them.
-        const long = Math.max(b.w, b.h) * 1.04;
-        const pitch = tall * (0.3 + r * 0.26);
+        // A roof the size of the house it stands on.
+        //
+        // Both axes were being given max(w, h), so a house thirty across and
+        // sixty long wore a roof sixty by sixty: it overhung the side walls by
+        // its own width again and the village came out as a field of mushrooms.
+        // Each axis takes its own wall now, plus a hand's breadth of eaves.
+        const pitch = tall * (0.42 + r * 0.3);       // steeper: a shallow cap reads as a lid
         if (r < 0.52) {
           hide(gables, i);
-          place(roofs, i, b.x, gy + tall, b.y, b.rot || 0, long, pitch, long);
+          place(roofs, i, b.x, gy + tall, b.y, b.rot || 0, b.w * 1.1, pitch, b.h * 1.1);
         } else {
           hide(roofs, i);
           // the ridge runs along the longer wall, the way a roof is framed
           const along = b.w >= b.h ? (b.rot || 0) : (b.rot || 0) + Math.PI / 2;
-          place(gables, i, b.x, gy + tall, b.y, along, Math.min(b.w, b.h) * 1.05,
-            pitch, Math.max(b.w, b.h) * 1.04);
+          place(gables, i, b.x, gy + tall, b.y, along, Math.min(b.w, b.h) * 1.1,
+            pitch, Math.max(b.w, b.h) * 1.02);
           C.setRGB(0.34, 0.22, 0.18);
           gables.setColorAt(i, C);
         }

@@ -21,9 +21,14 @@ import { groundY } from './terrainMesh.js';
 // A deck two lanes wide, and long enough to land on dry ground at both ends.
 // The channel is about 130 units across and the marsh either side takes it to
 // 200, so a span under 300 would stand in the water it is supposed to cross.
-const DECK_HW = 62; // half-width of the roadway - two lanes and a footway each side
-const RAIL_H = 13;
-const PIER_W = 34;
+// Half-width of the roadway. At sixty-two it was a hundred and twenty-four
+// units across - wider than a house is long - and a bridge that wide reads as a
+// concrete apron with a river under it. Two lanes and a footway each side is
+// about thirty-six, and at that width the piers, the parapets and the camber
+// are all visible instead of being lost under an acre of deck.
+const DECK_HW = 36;
+const RAIL_H = 16;
+const PIER_W = 30;
 
 const M = new THREE.Matrix4();
 const Q = new THREE.Quaternion();
@@ -113,10 +118,15 @@ export function buildBridges(scene, view) {
   };
 
   for (const c of list) {
-    // Square to the WATER, not to the map: the channel wanders, and a deck laid
-    // on the map's axis meets a leaning river at an angle and leaves a corner of
-    // itself in the stream.
-    const yaw = Math.atan2(-c.slope, 1);
+    // Straight across, west to east.
+    //
+    // It used to be laid square to the WATER, turning with whatever lean the
+    // channel had at that row - which is what a surveyor would do and which
+    // looked, on the field, like three bridges pointing in three directions.
+    // A road bridge here carries the road, and the road runs left to right; the
+    // deck is long enough to span a leaning channel without being turned to
+    // meet it.
+    const yaw = 0;
     const cs = Math.cos(yaw);
     const sn = Math.sin(yaw);
     // local +X is across the water
@@ -152,8 +162,8 @@ export function buildBridges(scene, view) {
     for (let i = 0; i < N; i++) {
       const u = -half + ((i + 0.5) / N) * half * 2;
       const [px, pz] = at(u, 0);
-      const camber = 6 * (1 - (u / half) * (u / half)); // a shallow rise mid-span
-      put(decks, px, deckY + camber - 5, pz, yaw, (half * 2) / N + 2, 6, DECK_HW * 2);
+      const camber = 14 * (1 - (u / half) * (u / half)); // the rise over the span
+      put(decks, px, deckY + camber - 4, pz, yaw, (half * 2) / N + 2, 5, DECK_HW * 2);
     }
 
     // piers, down from the deck to whatever is under them
@@ -184,7 +194,7 @@ export function buildBridges(scene, view) {
         const g = groundY(terrain, px, pz);
         const t = k / 6;
         const y = deckY * (1 - t) + (g + 4) * t;
-        put(decks, px, y - 5, pz, yaw, 48, 6, DECK_HW * 2 - k * 3);
+        put(decks, px, y - 4, pz, yaw, 48, 5, DECK_HW * 2 - k * 2);
       }
     }
 
@@ -193,8 +203,8 @@ export function buildBridges(scene, view) {
       for (let i = 0; i < N; i++) {
         const u = -half + ((i + 0.5) / N) * half * 2;
         const [px, pz] = at(u, side * DECK_HW);
-        const camber = 6 * (1 - (u / half) * (u / half));
-        put(rails, px, deckY + camber + 1, pz, yaw, (half * 2) / N + 2, RAIL_H, 7);
+        const camber = 14 * (1 - (u / half) * (u / half));
+        put(rails, px, deckY + camber + 1, pz, yaw, (half * 2) / N + 2, RAIL_H, 6);
       }
     }
   }

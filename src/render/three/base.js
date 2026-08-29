@@ -115,11 +115,21 @@ export function buildBase(scene, view) {
     mesh.count++;
   };
 
-  for (const c of list) {
-    const skin = TEAM[c.team] || TEAM.blue;
+  for (const raw of list) {
+    const skin = TEAM[raw.team] || TEAM.blue;
+    const hw = raw.hw + 46;
+    const hh = raw.hh + 40;
+    // Keep the whole compound on the battlefield.
+    //
+    // A headquarters is planted a hundred units in from its own edge and its
+    // wall reaches a hundred and thirty-four out, so half of it was built over
+    // the side of the map - and now that outside the map is black, half a fort
+    // was hanging in the void. The keep the SIMULATION knows about has not
+    // moved; this is only where the compound is drawn around it.
+    const c = { ...raw,
+      x: Math.max(hw + 8, Math.min(t.W - hw - 8, raw.x)),
+      y: Math.max(hh + 8, Math.min(t.H - hh - 8, raw.y)) };
     const gy = groundY(t, c.x, c.y);
-    const hw = c.hw + 46;
-    const hh = c.hh + 40;
     // The gate faces the fighting, which is inward from whichever edge this
     // headquarters is backed against.
     const inward = c.x < t.W / 2 ? 1 : -1;

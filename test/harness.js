@@ -867,17 +867,25 @@ function ground(map) {
     }
     seen.push({ seed, swing, sig: cross.map((c) => Math.round((c.y0 + c.y1) / 200) + (c.f ? 'f' : 'B')).join(',') });
   }
+  // What varies, and what no longer may.
+  //
+  // The crossings used to be rolled - two or three of them, bridge or ford or
+  // nothing - and this asked for that variety. It is now a fixed contract:
+  // three road bridges, one north, one on the centre line, one south. So the
+  // variety this looks for is where they SIT and where the river runs, and the
+  // three-and-mirrored shape is checked as a rule rather than as a spread.
   const sigs = new Set(seen.map((s2) => s2.sig));
-  const kinds = new Set(seen.map((s2) => s2.sig.replace(/[0-9]/g, '')));
-  const counts = new Set(seen.map((s2) => s2.sig.split(',').length));
   const swing = Math.max(...seen.map((s2) => s2.swing));
-  if (sigs.size < 3) problems.push('six seeds produced only ' + sigs.size + ' layouts - the map is not being generated');
-  if (kinds.size < 2) problems.push('the crossings are the same kinds every match (' + [...kinds][0] + ')');
-  if (counts.size < 2) problems.push('there are always exactly ' + [...counts][0] + ' crossings');
+  const wrongCount = seen.filter((s2) => s2.sig.split(',').length !== 3);
+  if (wrongCount.length)
+    problems.push('seed ' + wrongCount[0].seed + ' has ' + wrongCount[0].sig.split(',').length +
+      ' crossings, not the three that were asked for');
+  if (sigs.size < 3)
+    problems.push('six seeds produced only ' + sigs.size + ' layouts - the map is not being generated');
   if (swing < 700) problems.push('the river only wanders ' + Math.round(swing) + ' units across the map');
   if (problems.length) bad('one battlefield is not the next one', problems.join(BR));
   else ok('one battlefield is not the next one',
-    sigs.size + ' layouts in 6 seeds, ' + [...counts].sort().join('/') + ' crossings, river wanders ' + Math.round(swing));
+    sigs.size + ' layouts in 6 seeds, three bridges each, river wanders ' + Math.round(swing));
 }
 
 /* ------------------------------------------------------------------ */
