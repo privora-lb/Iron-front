@@ -27,7 +27,7 @@ import { srand, R, rnd, vr, seed } from '../core/rng.js';
 import { clamp, dist, other } from '../core/math.js';
 import { el, toast } from '../core/dom.js';
 import { holdScreenAwake, tap } from '../platform/native.js';
-import { write, pick } from '../platform/storage.js';
+import { read, write, pick } from '../platform/storage.js';
 import * as SAVES from '../platform/saves.js';
 import { sfx, unlock as unlockAudio, listen, toggleMuted, isMuted,
          suspend as suspendAudio, resume as resumeAudio } from '../audio/sound.js';
@@ -41,6 +41,26 @@ const cv=document.getElementById('cv'),ctx=cv.getContext('2d',{alpha:false});
 const glCv=document.getElementById('gl'),ovCv=document.getElementById('ov');
 const ovx=ovCv&&ovCv.getContext?ovCv.getContext('2d'):null;
 let viewMode=pick('view',['top','3d'],'3d');   // the map is still there, one tap away
+// Once, and once only: show the field.
+//
+// The view is remembered, and it was remembered from before there was anything
+// to remember it about. A player whose profile was made when the top-down map
+// was the only thing there is, or who looked at the map once months ago, is
+// pinned to it for ever - and every battlefield built since, the ground, the
+// weather, the men walking on it, is behind a button in a menu they have no
+// reason to open. That is not a preference they expressed; it is one they are
+// stuck with. So the stored choice is set aside a single time and the field is
+// shown. Choosing the map after this sticks, because the mark is set either way.
+let sawField=read('sawField',false);
+if(!sawField){
+  if(viewMode==='top'){ viewMode='3d'; write('view','3d'); }
+  write('sawField',true);
+}
+// What the player's stored preference came to, before any device had a say in
+// it. A machine with no WebGL2 is put back on the map a moment later, which is
+// right, and which makes viewMode itself useless for telling whether the
+// preference was honoured.
+const viewWanted=viewMode;
 let gfx3=null,gfx3Busy=false;
 let worldId=0,ruinsN=0;                     // bumped when the world, or what stands on it, changes
 let dpr=1;
@@ -3187,6 +3207,9 @@ function startBattle(){
   holdScreenAwake(true);
   remMode=false; el('remBtn').classList.remove('on');
   phase='battle'; selected=[]; battleTime=0; pressT=115; fit();
+  // and say so, the first time, where the player is actually looking at it
+  if(!sawField){ sawField=true;
+    if(viewMode==='3d') toast('The battle is fought in three dimensions now - the map is in the menu'); }
   battleRows();
   setBuy(false,true);
   // units already marching to a position keep going — the horn does not cancel your plan
@@ -3903,6 +3926,12 @@ function worldView(){
     // drawn only on the flat map: the wind that wanders, the clouds whose
     // shadows go over the fields, the birds, and the people who live here.
     wind, clouds, birds, civs,
+    // Where the water can be got over, and on what. The flat map draws a line
+    // and a label; the 3D field has to build the thing. x is where the channel
+    // runs at that row, and slope is which way the channel leans there, so a
+    // bridge can be laid square across the WATER rather than square to the map.
+    cross:hasWater()?CROSS.map(c=>({x:riverXAt(c.y),y:c.y,type:c.type,hw:c.hw,
+      slope:(riverXAt(Math.min(H-1,c.y+60))-riverXAt(Math.max(0,c.y-60)))/120})):[],
     viewTeam:viewTeam(), showsTeam:visible
   };
 }
@@ -6271,6 +6300,8 @@ try{ window.__lvl=(t,n)=>{ lvl[t]=n; buildPalette(); };
      window.__fake3doff=()=>FAKE3D_OFF;
      window.__deselect=()=>{ selected=[]; return selected.length; };
      window.__gfx3=()=>gfx3&&gfx3.stats?gfx3.stats(worldView()):null;
+     window.__view=()=>viewMode;
+     window.__viewwant=()=>viewWanted;
      window.__w2s=(x,y)=>w2s(x,y);
      window.__terrain=()=>terrain;
      window.__name=(x,y)=>groundName(x,y);

@@ -19,6 +19,8 @@ import { buildParticles } from './particles.js';
 import { buildFog } from './fog.js';
 import { buildDecals } from './decals.js';
 import { buildHedges } from './hedges.js';
+import { buildBridges } from './bridges.js';
+import { buildBase } from './base.js';
 import { buildClutter } from './clutter.js';
 import { buildSky } from './sky.js';
 import { buildWind } from './wind.js';
@@ -129,6 +131,8 @@ export function createScene({ canvas, view }) {
     world.water.material.dispose();
     world.props.dispose();
     world.hedges.dispose();
+    world.bridges.dispose();
+    world.base.dispose();
     if (world.decals) world.decals.dispose();
     world = null;
   }
@@ -142,6 +146,8 @@ export function createScene({ canvas, view }) {
     scene.add(water);
     const props = buildProps(scene, v.terrain, v);
     const hedges = buildHedges(scene, v.terrain, v.landuse);
+    const bridges = buildBridges(scene, v);
+    const base = buildBase(scene, v);
     // Cloud on the ground, and a wind through everything that grows out of it.
     weather.shadow(built.mesh.material);
     for (const m of hedges.meshes) weather.sway(m.material, 0.16);
@@ -151,7 +157,7 @@ export function createScene({ canvas, view }) {
     // the very sheet the flat map draws, not a copy of it.
     const decals = buildDecals(v.decal, { W: v.terrain.W, H: v.terrain.H });
     if (decals) decals.patch(built.mesh.material);
-    world = { ground: built.mesh, apron: built.apron, water, props, hedges, decals };
+    world = { ground: built.mesh, apron: built.apron, water, props, hedges, bridges, base, decals };
 
     scene.fog = new THREE.Fog(0x8fa0ad, 1800, 7000);
     fog.patchScene(scene);
@@ -307,6 +313,7 @@ export function createScene({ canvas, view }) {
       weather.update(v, now);
       fog.update(v);
       if (world.decals) world.decals.sync(v.clock || 0, v.decalV || 0);
+      world.base.update(v);
       life.update(v);
       units.update(v, camDist);
       dust.update(v, camera);
@@ -350,6 +357,8 @@ export function createScene({ canvas, view }) {
         fogFar: fog.sample(v.terrain.W * 0.9, v.terrain.H * 0.5),
         fogHome: fog.sample(v.terrain.W * 0.1, v.terrain.H * 0.5),
         hedges: world ? world.hedges.counts : null,
+        bridges: world ? world.bridges.counts : null,
+        base: world ? world.base.counts : null,
         clutter: clutter.counts(),
         life: life.counts(),
         decals: !!(world && world.decals),

@@ -78,6 +78,35 @@ export function buildProps(scene, terrain, view) {
     buildings.length,
     scene,
   );
+  // A second roof: a gable, which is a three-sided prism laid on its side. A
+  // village where every house wears the same pyramid reads as one house stamped
+  // out forty times, which is exactly what it looked like.
+  const gableGeo = new THREE.CylinderGeometry(0.72, 0.72, 1, 3, 1);
+  gableGeo.rotateY(Math.PI / 6);
+  gableGeo.rotateZ(Math.PI / 2);
+  gableGeo.translate(0, 0.5, 0);
+  const gables = instanced(
+    gableGeo,
+    new THREE.MeshLambertMaterial({ color: 0xffffff }),
+    buildings.length,
+    scene,
+  );
+  group.push(gables);
+  // and a chimney on the ones that have a hearth
+  const chimneys = instanced(
+    boxGeo,
+    new THREE.MeshLambertMaterial({ color: 0x6a5a4c }),
+    buildings.length,
+    scene,
+  );
+  group.push(chimneys);
+  // A stable scatter: the same house is the same house every time the world is
+  // rebuilt, and it never touches the simulation's stream.
+  const vary = (n) => {
+    let h = (n * 2654435761 + 1013904223) | 0;
+    h = (h ^ (h >>> 15)) * 668265263;
+    return ((h ^ (h >>> 13)) >>> 0) / 4294967296;
+  };
   group.push(roofs);
 
   /* ---- works and the keeps ---- */
@@ -121,41 +150,84 @@ export function buildProps(scene, terrain, view) {
 
       for (let i = 0; i < buildings.length; i++) {
         const b = buildings[i];
-        const gy = groundY(t, b.x, b.y);
-        const tall = b.bunker ? 13 : b.barn ? 21 : b.city ? 44 : 24;
+        // Sit it in the ground, not on one point of it.
+        //
+        // The height was read at the CENTRE of the house and the box stood on
+        // that, so on any slope the uphill wall was buried and the downhill one
+        // hung in the air on stilts. Read all four corners instead: stand on the
+        // LOWEST of them so nothing floats, and grow the walls by the fall
+        // across the plot so the house is still its own height above the
+        // uphill side. That is what makes a building look founded rather than
+        // dropped.
+        const c = Math.cos(b.rot || 0) * 0.5, s2 = Math.sin(b.rot || 0) * 0.5;
+        let lo = 1e9, hi = -1e9;
+        for (const [ox, oz] of [[-1, -1], [1, -1], [1, 1], [-1, 1]]) {
+          const px = b.x + (ox * b.w * c - oz * b.h * s2);
+          const pz = b.y + (ox * b.w * s2 + oz * b.h * c);
+          const g = groundY(t, px, pz);
+          if (g < lo) lo = g;
+          if (g > hi) hi = g;
+        }
+        const fall = Math.min(26, hi - lo);
+        const gy = lo - 2;
+        const r = vary(i);
+        const base = b.bunker ? 13 : b.barn ? 21 : b.city ? 44 : 24;
+        // no two the same height, and none of them a cube
+        const tall = base * (0.82 + r * 0.42) + fall;
         if (b.dead) {
           // A ruin is a low heap where the house stood.
-          place(houses, i, b.x, gy, b.y, b.rot || 0, b.w * 0.9, 5, b.h * 0.9);
+          place(houses, i, b.x, gy, b.y, b.rot || 0, b.w * 0.9, 5 + fall, b.h * 0.9);
           C.setRGB(0.36, 0.34, 0.3);
           houses.setColorAt(i, C);
           hide(roofs, i);
+          hide(gables, i);
+          hide(chimneys, i);
           continue;
         }
         place(houses, i, b.x, gy, b.y, b.rot || 0, b.w, tall, b.h);
-        C.setRGB(b.bunker ? 0.42 : 0.62, b.bunker ? 0.42 : 0.58, b.bunker ? 0.4 : 0.5);
+        // Walls are rendered, plaster, timber and stone, not one grey.
+        const w = 0.46 + r * 0.3;
+        if (b.bunker) C.setRGB(0.42, 0.42, 0.4);
+        else if (r < 0.3) C.setRGB(w * 1.06, w * 0.99, w * 0.86);      // limewash
+        else if (r < 0.6) C.setRGB(w * 0.92, w * 0.84, w * 0.72);      // render
+        else C.setRGB(w * 0.78, w * 0.74, w * 0.7);                    // stone
         houses.setColorAt(i, C);
         if (b.bunker) {
           hide(roofs, i);
+          hide(gables, i);
+          hide(chimneys, i);
           continue;
         }
-        place(
-          roofs,
-          i,
-          b.x,
-          gy + tall,
-          b.y,
-          b.rot || 0,
-          Math.max(b.w, b.h) * 1.02,
-          tall * 0.42,
-          Math.max(b.w, b.h) * 1.02,
-        );
-        C.setRGB(0.34, 0.22, 0.18);
+        // A gable or a hip, and a chimney on about half of them.
+        const long = Math.max(b.w, b.h) * 1.04;
+        const pitch = tall * (0.3 + r * 0.26);
+        if (r < 0.52) {
+          hide(gables, i);
+          place(roofs, i, b.x, gy + tall, b.y, b.rot || 0, long, pitch, long);
+        } else {
+          hide(roofs, i);
+          // the ridge runs along the longer wall, the way a roof is framed
+          const along = b.w >= b.h ? (b.rot || 0) : (b.rot || 0) + Math.PI / 2;
+          place(gables, i, b.x, gy + tall, b.y, along, Math.min(b.w, b.h) * 1.05,
+            pitch, Math.max(b.w, b.h) * 1.04);
+          C.setRGB(0.34, 0.22, 0.18);
+          gables.setColorAt(i, C);
+        }
+        if (r > 0.34) {
+          place(chimneys, i, b.x + (r - 0.5) * b.w * 0.7, gy + tall,
+            b.y + (0.5 - r) * b.h * 0.6, b.rot || 0, 5, pitch + 7, 5);
+        } else hide(chimneys, i);
+        C.setRGB(0.3 + r * 0.16, 0.19 + r * 0.09, 0.15 + r * 0.07);   // tile, slate, thatch
         roofs.setColorAt(i, C);
+        gables.setColorAt(i, C);
       }
       houses.instanceMatrix.needsUpdate = true;
       roofs.instanceMatrix.needsUpdate = true;
+      gables.instanceMatrix.needsUpdate = true;
+      chimneys.instanceMatrix.needsUpdate = true;
       if (houses.instanceColor) houses.instanceColor.needsUpdate = true;
       if (roofs.instanceColor) roofs.instanceColor.needsUpdate = true;
+      if (gables.instanceColor) gables.instanceColor.needsUpdate = true;
 
       const wl = v.walls || [];
       for (let i = 0; i < wallMesh.count; i++) {
@@ -176,7 +248,11 @@ export function buildProps(scene, terrain, view) {
           hide(keeps, i);
           continue;
         }
-        place(keeps, i, c.x, groundY(t, c.x, c.y), c.y, 0, c.hw * 2, c.dead ? 12 : 62, c.hh * 2);
+        // The keep itself is built in base.js now, as a compound with a wall,
+        // huts, towers and a flag. What is left here is the rubble it becomes
+        // when it falls, which the compound has no version of.
+        if (!c.dead) { hide(keeps, i); continue; }
+        place(keeps, i, c.x, groundY(t, c.x, c.y), c.y, 0, c.hw * 2, 12, c.hh * 2);
         const dead = c.dead ? 0.4 : 1;
         if (c.team === 'blue') C.setRGB(0.22 * dead, 0.3 * dead, 0.46 * dead);
         else C.setRGB(0.44 * dead, 0.19 * dead, 0.15 * dead);
