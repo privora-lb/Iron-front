@@ -378,7 +378,11 @@ function loadGame(opts) {
   const parsed = readIndex(file);
   const doc = makeDocument(parsed.body);
 
-  const store = new Map();
+  // Seeded, so a test can load the game as a player who has been here before:
+  // settings outlive builds, and what a returning profile does to a new feature
+  // is exactly the sort of thing that is never noticed until somebody reports
+  // that nothing has changed.
+  const store = new Map(Object.entries(opts.storage || {}));
   const errors = [];
   const timers = [];
   let clock = 1000;

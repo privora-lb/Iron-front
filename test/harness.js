@@ -1094,6 +1094,36 @@ head('9. RENDERERS');
   else ok('the 3D field is told about the fog, the marks and the dead', 'by reference; the dead are laid out and cleared');
 }
 
+// A player who was here before the 3D battlefield was.
+//
+// The view is remembered, and it was being remembered from before there was
+// anything to remember it about: a profile made when the top-down map was the
+// only thing there is came back pinned to it, and every battlefield built since
+// - the ground, the weather, the men walking on it - sat behind a button in a
+// menu nobody had a reason to open. It is the difference between shipping the
+// game and shipping it to somebody who can see it.
+{
+  const problems = [];
+  // The seed is copied into the game's own storage, so what it wrote back has
+  // to be read from there and not from the object it was handed.
+  const view = (store) => {
+    const g = loadGame({ quiet: true, storage: store });
+    return { want: g.hook('viewwant')(), got: (k) => g.win.localStorage.getItem('ironfront:' + k) };
+  };
+  const old = view({ 'ironfront:view': JSON.stringify('top') });
+  if (old.want !== '3d') problems.push('a profile from before the field is still pinned to the map');
+  if (old.got('sawField') !== 'true') problems.push('the field was shown without leaving a mark, so it would be forced again every load');
+  // and having been shown it once, choosing the map is a choice that sticks
+  const chose = view({ 'ironfront:view': JSON.stringify('top'), 'ironfront:sawField': 'true' });
+  if (chose.want !== 'top') problems.push('a player who wants the map is overridden anyway');
+  // a new player gets the field, as they always did
+  if (view({}).want !== '3d') problems.push('a new player no longer starts on the field');
+  // and one already on it is left alone
+  if (view({ 'ironfront:view': JSON.stringify('3d') }).want !== '3d') problems.push('a player on the field was moved off it');
+  if (problems.length) bad('an old profile does not hide the battlefield', problems.join(BR));
+  else ok('an old profile does not hide the battlefield', 'shown once, and the map sticks if it is then chosen');
+}
+
 // Walking round the field. The map has one bearing and always did; the 3D
 // camera has whichever one the player has turned to, and every way of turning
 // it has to reach the renderer - while the flat map is left exactly as it was.
