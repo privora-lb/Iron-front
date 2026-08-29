@@ -8,6 +8,7 @@
 // to keep in sync with a modeller.
 import * as THREE from 'three';
 import { groundY } from './terrainMesh.js';
+import { mergeGeometries } from 'three/examples/jsm/utils/BufferGeometryUtils.js';
 
 const M = new THREE.Matrix4();
 const Q = new THREE.Quaternion();
@@ -49,15 +50,56 @@ export function buildProps(scene, terrain, view) {
 
   /* ---- trees: a trunk and a crown, both instanced ---- */
   const trees = view.trees || [];
-  const trunkGeo = new THREE.CylinderGeometry(0.16, 0.22, 1, 5);
+  const trunkGeo = new THREE.CylinderGeometry(0.13, 0.24, 1, 6);
   trunkGeo.translate(0, 0.5, 0);
-  const crownGeo = new THREE.ConeGeometry(1, 1, 7);
-  crownGeo.translate(0, 0.5, 0);
+
+  // A crown is not a cone.
+  //
+  // Every tree on every battlefield was one seven-sided cone, which is why a
+  // wood read as a bag of party hats. A conifer is a stack of skirts that get
+  // shorter toward the top and it is the STEPS between them that say "fir" at
+  // any distance; a broadleaf is a cluster of lumps with no point at all. Two
+  // crowns, picked per tree, is the difference between a forest and a pattern.
+  function firGeometry() {
+    const tiers = [];
+    for (let i = 0; i < 4; i++) {
+      const t = i / 3;                                  // 0 at the foot, 1 at the tip
+      const r = 1 - t * 0.74;
+      const c = new THREE.ConeGeometry(r, 0.46, 7);
+      c.translate(0, 0.16 + t * 0.74, 0);
+      tiers.push(c);
+    }
+    const g = mergeGeometries(tiers) || new THREE.ConeGeometry(1, 1, 7);
+    return g;
+  }
+  function broadGeometry() {
+    const lobes = [];
+    // one mass and three smaller ones pushed off it, so the outline is lumpy
+    const main = new THREE.IcosahedronGeometry(0.78, 0);
+    main.scale(1, 0.86, 1);
+    main.translate(0, 0.66, 0);
+    lobes.push(main);
+    for (const [dx, dy, dz, r] of [[0.5, 0.5, 0.16, 0.46], [-0.44, 0.58, -0.3, 0.42],
+                                   [0.1, 0.9, -0.42, 0.4]]) {
+      const l = new THREE.IcosahedronGeometry(r, 0);
+      l.translate(dx, dy, dz);
+      lobes.push(l);
+    }
+    return mergeGeometries(lobes) || main;
+  }
   const trunkMat = new THREE.MeshLambertMaterial({ color: 0x4a3a26 });
   const crownMat = new THREE.MeshLambertMaterial({ color: 0xffffff });
   const trunks = instanced(trunkGeo, trunkMat, trees.length, scene);
-  const crowns = instanced(crownGeo, crownMat, trees.length, scene);
-  group.push(trunks, crowns);
+  const crowns = instanced(firGeometry(), crownMat, trees.length, scene);
+  const broads = instanced(broadGeometry(),
+    new THREE.MeshLambertMaterial({ color: 0xffffff }), trees.length, scene);
+  group.push(trunks, crowns, broads);
+  // Which kind a tree is, stably: the same wood every time the world is rebuilt.
+  const kindOf = (n) => {
+    let h = (n * 1103515245 + 12345) | 0;
+    h = (h ^ (h >>> 16)) * 2246822519;
+    return ((h ^ (h >>> 13)) >>> 0) / 4294967296;
+  };
 
   /* ---- houses ---- */
   const buildings = view.buildings || [];
@@ -123,7 +165,7 @@ export function buildProps(scene, terrain, view) {
 
   const api = {
     /** What bends in the wind. A trunk does not; a crown does. */
-    swaying: () => [crowns],
+    swaying: () => [crowns, broads],
 
     /** Lay everything out. Cheap enough to redo when something is destroyed. */
     refresh(v) {
@@ -138,15 +180,31 @@ export function buildProps(scene, terrain, view) {
         }
         const gy = groundY(t, tr.x, tr.y);
         const s = tr.s;
-        place(trunks, i, tr.x, gy, tr.y, 0, s * 0.55, s * 1.15, s * 0.55);
-        place(crowns, i, tr.x, gy + s * 0.95, tr.y, i * 0.7, s * 1.15, s * 2.1, s * 1.15);
+        const k = kindOf(i);
+        const lean = (k - 0.5) * 0.1;                   // nothing grows dead straight
+        place(trunks, i, tr.x, gy, tr.y, i * 0.7, s * 0.5, s * (1 + k * 0.5), s * 0.5);
         const g = (tr.gr || 90) / 255;
-        C.setRGB(g * 0.55, g * 1.02, g * 0.46);
-        crowns.setColorAt(i, C);
+        // Broadleaves are the yellower green and firs the bluer one, which is
+        // most of what tells two woods apart from a distance.
+        if (k < 0.56) {
+          hide(broads, i);
+          place(crowns, i, tr.x, gy + s * 0.72, tr.y, i * 0.7 + lean,
+            s * (1 + k * 0.5), s * (2.0 + k * 0.8), s * (1 + k * 0.5));
+          C.setRGB(g * 0.46, g * 0.94, g * 0.5);
+          crowns.setColorAt(i, C);
+        } else {
+          hide(crowns, i);
+          place(broads, i, tr.x, gy + s * 1.15, tr.y, i * 0.7 + lean,
+            s * (1.5 + k * 0.6), s * (1.5 + k * 0.5), s * (1.5 + k * 0.6));
+          C.setRGB(g * 0.66, g * 1.02, g * 0.36);
+          broads.setColorAt(i, C);
+        }
       }
       trunks.instanceMatrix.needsUpdate = true;
       crowns.instanceMatrix.needsUpdate = true;
+      broads.instanceMatrix.needsUpdate = true;
       if (crowns.instanceColor) crowns.instanceColor.needsUpdate = true;
+      if (broads.instanceColor) broads.instanceColor.needsUpdate = true;
 
       for (let i = 0; i < buildings.length; i++) {
         const b = buildings[i];

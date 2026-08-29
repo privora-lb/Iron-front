@@ -91,11 +91,46 @@ const HIP = 3.6 * MAN;
  * broad, and the legs have to show below the coat or there is no walk to see.
  */
 function bodyGeometry() {
-  const coat = new THREE.CylinderGeometry(1.55 * MAN, 1.2 * MAN, 3.2 * MAN, 7);
+  // Narrower than it was. At 1.55 man-units of shoulder the coat was a barrel
+  // wide enough to swallow the arms whole, which is exactly what happened the
+  // first time they were added: they were set at 1.34 and vanished inside it.
+  const coat = new THREE.CylinderGeometry(1.16 * MAN, 0.94 * MAN, 3.2 * MAN, 7);
   coat.translate(0, 5.1 * MAN, 0);
   const neck = new THREE.CylinderGeometry(0.5 * MAN, 0.62 * MAN, 0.7 * MAN, 5);
   neck.translate(0, 6.9 * MAN, 0);
-  return mergeGeometries([coat, neck]) || coat;
+  const head = new THREE.SphereGeometry(0.78 * MAN, 7, 5);
+  head.translate(0, 7.35 * MAN, 0);
+
+  // ARMS. A shape with a head, a body and legs and no arms is a chess piece;
+  // it is the arms coming forward onto the rifle that make the silhouette read
+  // as a man carrying a weapon rather than as a skittle with a stick beside it.
+  // They are baked into the coat rather than instanced separately because they
+  // do not move independently of it - the walk is in the legs and the hips -
+  // and two more draw calls for a thousand men is not worth a shrug.
+  const arms = [];
+  for (const side of [-1, 1]) {
+    // upper arm, hanging from the shoulder and angled in toward the grip
+    const up = new THREE.CylinderGeometry(0.3 * MAN, 0.27 * MAN, 1.6 * MAN, 5);
+    up.rotateZ(side * -0.26);
+    up.translate(side * 1.34 * MAN, 5.7 * MAN, 0);
+    arms.push(up);
+    // forearm, brought forward and in onto the weapon: both hands meet in front
+    // of the chest, which is the shape that says "carrying a rifle" at a
+    // hundred metres when no detail survives at all.
+    const fore = new THREE.CylinderGeometry(0.26 * MAN, 0.24 * MAN, 1.5 * MAN, 5);
+    fore.rotateX(-Math.PI / 2);
+    fore.rotateY(side * 0.42);
+    fore.translate(side * 1.16 * MAN, 5.15 * MAN, 0.86 * MAN);
+    arms.push(fore);
+  }
+  // A pack on his back, and a rolled blanket over it. Kit is what separates a
+  // soldier from a man in a coat.
+  const pack = new THREE.BoxGeometry(1.6 * MAN, 1.6 * MAN, 0.8 * MAN);
+  pack.translate(0, 5.5 * MAN, -1.15 * MAN);
+  const roll = new THREE.CylinderGeometry(0.28 * MAN, 0.28 * MAN, 1.6 * MAN, 5);
+  roll.rotateZ(Math.PI / 2);
+  roll.translate(0, 6.4 * MAN, -1.15 * MAN);
+  return mergeGeometries([coat, neck, head, pack, roll, ...arms]) || coat;
 }
 
 /**
@@ -121,10 +156,17 @@ function legGeometry() {
  * worth more than any of them.
  */
 function rifleGeometry() {
-  const g = new THREE.BoxGeometry(1, 1, 1);
-  g.scale(4.4 * MAN, 0.28 * MAN, 0.24 * MAN);
-  g.translate(1.3 * MAN, 5.6 * MAN, 0.6 * MAN);
-  return g;
+  // Shorter and carried closer in. At four and a half man-units it was a lance:
+  // it reached further in front of him than he was wide and read as a plank
+  // stuck through a skittle. A rifle is about as long as a man's arm span.
+  const body = new THREE.BoxGeometry(1, 1, 1);
+  body.scale(3.0 * MAN, 0.24 * MAN, 0.2 * MAN);
+  body.translate(0.9 * MAN, 5.5 * MAN, 0.9 * MAN);
+  // the magazine, which is the one detail that survives being three pixels tall
+  const mag = new THREE.BoxGeometry(1, 1, 1);
+  mag.scale(0.3 * MAN, 0.5 * MAN, 0.18 * MAN);
+  mag.translate(0.7 * MAN, 5.24 * MAN, 0.9 * MAN);
+  return mergeGeometries([body, mag]) || body;
 }
 
 /** A helmet: the one part that says whose army he is in. */
@@ -146,6 +188,72 @@ const slabGeometry = (top, bottom) => {
   return g;
 };
 
+/**
+ * A hull with a nose on it.
+ *
+ * A plain tapered slab is a wedge, and a wedge with a stick out of the front is
+ * what a tank looked like here. Real armour has a glacis - a steeply sloped
+ * front plate - and a squarer engine deck behind, and the change of angle along
+ * the top is what the eye reads as "tank" before it can make out any detail.
+ */
+function hullGeometry() {
+  const body = slabGeometry(0.4, 0.5);
+  const glacis = new THREE.CylinderGeometry(0.2, 0.42, 1, 4);
+  glacis.rotateY(Math.PI / 4);
+  glacis.rotateZ(-0.5);
+  glacis.scale(0.62, 0.5, 1);
+  glacis.translate(0.42, 0.3, 0);
+  const deck = new THREE.BoxGeometry(0.36, 0.3, 0.78);
+  deck.translate(-0.3, 0.72, 0);
+  return mergeGeometries([body, glacis, deck]) || body;
+}
+
+/**
+ * A track run, with road wheels in it.
+ *
+ * The wheels are baked into the track rather than instanced on their own: a
+ * tank has six or seven of them a side and there can be a hundred tanks, and
+ * fourteen hundred more instances to draw is a real cost for something that is
+ * three pixels across most of the time. Baked, they are free - the same one
+ * draw call the bare track already was.
+ */
+function trackGeometry() {
+  const parts = [];
+  const run = new THREE.BoxGeometry(1, 1, 1);
+  run.translate(0, 0.5, 0);
+  parts.push(run);
+  for (let i = 0; i < 6; i++) {
+    const w = new THREE.CylinderGeometry(0.46, 0.46, 1.25, 7);
+    w.rotateX(Math.PI / 2);
+    w.rotateY(Math.PI / 2);
+    w.translate(-0.42 + (i / 5) * 0.84, 0.42, 0);
+    parts.push(w);
+  }
+  // drive sprocket at the back, idler at the front, both bigger than the road
+  // wheels - the thing that makes a run of wheels read as a track
+  for (const [x, r] of [[-0.5, 0.6], [0.5, 0.56]]) {
+    const d = new THREE.CylinderGeometry(r, r, 1.3, 8);
+    d.rotateX(Math.PI / 2);
+    d.rotateY(Math.PI / 2);
+    d.translate(x, 0.5, 0);
+    parts.push(d);
+  }
+  return mergeGeometries(parts) || run;
+}
+
+/** A turret with a bustle behind it and a mantlet where the gun comes out. */
+function turretGeometry() {
+  const t = slabGeometry(0.34, 0.5);
+  const bustle = new THREE.BoxGeometry(0.42, 0.5, 0.8);
+  bustle.translate(-0.42, 0.36, 0);
+  const mantlet = new THREE.CylinderGeometry(0.34, 0.34, 0.36, 7);
+  mantlet.rotateZ(Math.PI / 2);
+  mantlet.translate(0.44, 0.42, 0);
+  const hatch = new THREE.CylinderGeometry(0.2, 0.22, 0.16, 7);
+  hatch.translate(-0.1, 0.98, 0.12);
+  return mergeGeometries([t, bustle, mantlet, hatch]) || t;
+}
+
 export function buildUnits(scene) {
   const men = instanced(bodyGeometry(), MAX_MEN, scene);
   const helms = instanced(helmetGeometry(), MAX_MEN, scene);
@@ -153,21 +261,26 @@ export function buildUnits(scene) {
   const legR = instanced(legGeometry(), MAX_MEN, scene);
   const rifles = instanced(rifleGeometry(), MAX_MEN, scene, { color: 0x2c2620 });
 
-  const hulls = instanced(slabGeometry(0.38, 0.5), MAX_VEH, scene);
-  const turrets = instanced(slabGeometry(0.34, 0.5), MAX_VEH, scene);
+  const hulls = instanced(hullGeometry(), MAX_VEH, scene);
+  const turrets = instanced(turretGeometry(), MAX_VEH, scene);
 
-  // Tracks: two dark runs down the sides, which is most of what makes a shape
-  // read as tracked rather than as a box on wheels.
-  const trackGeo = new THREE.BoxGeometry(1, 1, 1);
-  trackGeo.translate(0, 0.5, 0);
+  // Tracks: two dark runs down the sides with the road wheels in them, which is
+  // most of what makes a shape read as tracked rather than as a box on wheels.
+  const trackGeo = trackGeometry();
   const tracksL = instanced(trackGeo, MAX_VEH, scene, { color: 0x2a2a26 });
   const tracksR = instanced(trackGeo, MAX_VEH, scene, { color: 0x2a2a26 });
 
   // The barrel points down +X before it is turned, so the traverse the
   // simulation already tracks is the rotation applied here.
-  const barrelGeo = new THREE.CylinderGeometry(0.42, 0.5, 1, 6);
-  barrelGeo.rotateZ(Math.PI / 2);
-  barrelGeo.translate(0.5, 0, 0);
+  const tube = new THREE.CylinderGeometry(0.4, 0.5, 1, 7);
+  tube.rotateZ(Math.PI / 2);
+  tube.translate(0.5, 0, 0);
+  // A muzzle brake. It is two hundred triangles and it is the difference
+  // between a gun and a length of pipe.
+  const brake = new THREE.CylinderGeometry(0.72, 0.72, 0.16, 7);
+  brake.rotateZ(Math.PI / 2);
+  brake.translate(0.94, 0, 0);
+  const barrelGeo = mergeGeometries([tube, brake]) || tube;
   const barrels = instanced(barrelGeo, MAX_VEH, scene, { color: 0x22221f });
 
   // A pennant on the hull, so you can tell whose armour that is without
