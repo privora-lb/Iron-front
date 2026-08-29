@@ -82,7 +82,27 @@ export function buildBase(scene, view) {
   const conc = bucket(boxGeo, concMat, n * 18 + np * 12);
   const masts = bucket(boxGeo, mastMat, n * 2 + np * 2);
 
+  // How far to bury a piece so it meets the ground on all sides.
+  //
+  // Every part of the compound stood on the height read at its OWN centre, so on
+  // any slope a wall panel met the ground on its uphill side and hung in the air
+  // on its downhill one. Read the four corners, stand on the lowest, and add the
+  // fall across the piece to its height so it still stands as tall as it should.
+  // Same rule the houses were given, for the same reason.
+  const seat = (x, z, sx, sz) => {
+    let lo = 1e9, hi = -1e9;
+    for (const [ox, oz] of [[-0.5, -0.5], [0.5, -0.5], [0.5, 0.5], [-0.5, 0.5]]) {
+      const g = groundY(t, x + ox * sx, z + oz * sz);
+      if (g < lo) lo = g;
+      if (g > hi) hi = g;
+    }
+    return { y: lo, fall: Math.min(30, hi - lo) };
+  };
+
   const put = (mesh, x, y, z, yaw, sx, sy, sz, col) => {
+    // The same guard the bridges need: an instance past the end of the buffer
+    // keeps a zero matrix and draws as a spike through the world origin.
+    if (mesh.count >= mesh.instanceMatrix.count) return;
     Q.setFromAxisAngle(UP, yaw);
     P.set(x, y, z);
     S.set(sx, sy, sz);
@@ -109,8 +129,8 @@ export function buildBase(scene, view) {
     for (let u = -hw; u <= hw; u += step) {
       for (const side of [-1, 1]) {
         const z = c.y + side * hh;
-        const g = groundY(t, c.x + u, z);
-        put(walls, c.x + u, g - 3, z, 0, step - 3, 17 + ((u * side) % 3), 13);
+        const st = seat(c.x + u, z, step, 13);
+        put(walls, c.x + u, st.y - 3, z, 0, step - 3, 17 + st.fall + ((u * side) % 3), 13);
       }
     }
     for (let v = -hh + step; v <= hh - step; v += step) {
@@ -118,8 +138,8 @@ export function buildBase(scene, view) {
         // leave the gateway open on the fighting side
         if (side === inward && Math.abs(v) < 46) continue;
         const x = c.x + side * hw;
-        const g = groundY(t, x, c.y + v);
-        put(walls, x, g - 3, c.y + v, 0, 13, 17 + ((v * side) % 3), step - 3);
+        const st = seat(x, c.y + v, 13, step);
+        put(walls, x, st.y - 3, c.y + v, 0, 13, 17 + st.fall + ((v * side) % 3), step - 3);
       }
     }
     // gate piers
@@ -134,22 +154,23 @@ export function buildBase(scene, view) {
       for (const sz of [-1, 1]) {
         const x = c.x + sx * hw;
         const z = c.y + sz * hh;
-        const g = groundY(t, x, z);
-        put(conc, x, g - 3, z, 0, 18, 44, 18); // the leg
-        put(conc, x, g + 41, z, 0, 28, 12, 28); // the cabin
+        const st = seat(x, z, 18, 18);
+        put(conc, x, st.y - 3, z, 0, 18, 44 + st.fall, 18); // the leg
+        put(conc, x, st.y + 41 + st.fall, z, 0, 28, 12, 28); // the cabin
       }
     }
 
     // ---- the command bunker, low and heavy, and its blast berm ----
-    put(conc, c.x - inward * 34, gy - 4, c.y, 0, 78, 26, 104);
-    put(conc, c.x - inward * 34, gy + 22, c.y, 0, 62, 7, 84);
+    const bst = seat(c.x - inward * 34, c.y, 78, 104);
+    put(conc, c.x - inward * 34, bst.y - 4, c.y, 0, 78, 26 + bst.fall, 104);
+    put(conc, c.x - inward * 34, bst.y + 22 + bst.fall, c.y, 0, 62, 7, 84);
 
     // ---- barracks: huts in a row, the way an army lays them out ----
     for (let i = 0; i < 4; i++) {
       const z = c.y - 96 + i * 64;
       const x = c.x + inward * 44;
-      const g = groundY(t, x, z);
-      put(huts, x, g + 12, z, 0, 46, 24, 30);
+      const st = seat(x, z, 46, 30);
+      put(huts, x, st.y + 12, z, 0, 46, 24, 30);
     }
 
     // ---- sandbag rings, facing out ----
@@ -205,7 +226,8 @@ export function buildBase(scene, view) {
       if (nx * face < -0.55) continue;            // the gap, on the friendly side
       const px = b.x + nx * 96;
       const pz = b.y + Math.sin(th) * 82;
-      put(walls, px, groundY(t, px, pz) - 3, pz, th, 26, 13 + ((a % 3) * 2), 11);
+      const st = seat(px, pz, 26, 11);
+      put(walls, px, st.y - 3, pz, th, 26, 13 + st.fall + ((a % 3) * 2), 11);
     }
 
     if (depot) {
@@ -213,8 +235,8 @@ export function buildBase(scene, view) {
       for (let i = 0; i < 6; i++) {
         const px = b.x - face * 30 + (i % 3) * 30;
         const pz = b.y - 40 + ((i / 3) | 0) * 34;
-        const g = groundY(t, px, pz);
-        put(conc, px, g - 2, pz, i * 0.4, 24, 12 + (i % 2) * 8, 20);
+        const st = seat(px, pz, 24, 20);
+        put(conc, px, st.y - 2, pz, i * 0.4, 24, 12 + st.fall + (i % 2) * 8, 20);
       }
       for (let i = 0; i < 5; i++) {
         const px = b.x + face * 46;
@@ -223,7 +245,8 @@ export function buildBase(scene, view) {
       }
     } else {
       // a strongpoint: a dug-in shelter and a gun pit facing the enemy
-      put(conc, b.x - face * 26, g0 - 3, b.y, 0, 46, 17, 62);
+      const sst = seat(b.x - face * 26, b.y, 46, 62);
+      put(conc, b.x - face * 26, sst.y - 3, b.y, 0, 46, 17 + sst.fall, 62);
       for (let a = 0; a < 6; a++) {
         const th = -Math.PI / 2 + (a / 5) * Math.PI;
         const px = b.x + face * 44 + Math.cos(th) * 26 * face;

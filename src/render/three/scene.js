@@ -366,6 +366,20 @@ export function createScene({ canvas, view }) {
       };
     },
 
+    /** Every object in the scene, by name, so a stray one can be found by
+     *  switching things off until it goes. Debug only. */
+    layers() {
+      const out = [];
+      scene.traverse((o) => {
+        if (!o.isMesh && !o.isInstancedMesh && !o.isPoints) return;
+        o.geometry.computeBoundingSphere();
+        const b = o.geometry.boundingSphere;
+        out.push({ o, name: o.name || o.type, r: b ? Math.round(b.radius) : -1,
+          n: o.isInstancedMesh ? o.count : 1, vis: o.visible });
+      });
+      return out;
+    },
+
     dispose() {
       clearWorld();
       sky3.dispose();

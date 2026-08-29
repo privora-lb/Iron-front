@@ -665,7 +665,27 @@ const moistureAt = (x, y) => wet[gi(x, y)];
 let falling = [], treesDown = 0;
 const TMP = [];
 
+// No two trunks closer than this. A wood was being sown by throwing darts at an
+// ellipse, so trees landed on top of one another and a forest came out as a
+// solid green mass with no floor and no gaps to fight through. Real woodland has
+// room between the stems; so does this one now, and the thinning is what lets
+// you see into it.
+const TREE_GAP = 29;
+
 function plantTree(x, y, s, gr) {
+  // Two cells either way: the terrain grid is about twenty-two units across, so
+  // one ring of neighbours is not wide enough to catch everything inside the gap.
+  const cgx = (x / TG) | 0, cgy = (y / TG) | 0;
+  for (let dy = -2; dy <= 2; dy++)
+    for (let dx = -2; dx <= 2; dx++) {
+      const gx = cgx + dx, gy = cgy + dy;
+      if (gx < 0 || gy < 0 || gx >= TW || gy >= TH) continue;
+      for (let k = treeAt[gy * TW + gx]; k >= 0; k = trees[k].next) {
+        const o = trees[k];
+        const ddx = o.x - x, ddy = o.y - y;
+        if (ddx * ddx + ddy * ddy < TREE_GAP * TREE_GAP) return null;
+      }
+    }
   const t = { x, y, s, gr, dead:false, fall:0, fa:0, cells:[], next:-1 };
   const r = Math.max(TG * .55, s * .85);           // how far the crown shades the ground
   for (let gy = (((y - r) / TG) | 0); gy <= (((y + r) / TG) | 0); gy++)
@@ -703,7 +723,12 @@ function plantTrees() {
       continue;
     }
     if (f.type !== 'forest') continue;
-    const count = clamp(f.rx * f.ry / 150, 20, 190);
+    // Sow generously and let the spacing rule do the thinning. Since no trunk
+    // may stand within TREE_GAP of another, extra attempts do not pile trees up
+    // - they only fill the gaps that are left, up to the density the spacing
+    // allows. Sowing at the old rate through the new rule left the desert with
+    // fewer trees than there is anything to crush.
+    const count = clamp((f.rx * f.ry) / 62, 40, 460);
     for (let i = 0; i < count; i++) {
       const a = rnd(0, 6.28), rr = Math.sqrt(R());
       const x = f.x + Math.cos(a) * f.rx * rr * .92, y = f.y + Math.sin(a) * f.ry * rr * .92;
@@ -6309,6 +6334,7 @@ try{ window.__lvl=(t,n)=>{ lvl[t]=n; buildPalette(); };
      window.__fake3doff=()=>FAKE3D_OFF;
      window.__deselect=()=>{ selected=[]; return selected.length; };
      window.__gfx3=()=>gfx3&&gfx3.stats?gfx3.stats(worldView()):null;
+     window.__layers=()=>gfx3&&gfx3.layers?gfx3.layers():null;
      window.__view=()=>viewMode;
      window.__viewwant=()=>viewWanted;
      window.__w2s=(x,y)=>w2s(x,y);

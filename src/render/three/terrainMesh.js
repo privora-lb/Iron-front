@@ -615,7 +615,17 @@ export function buildTerrain(terrain, pal, landuse, map) {
 // How far the country runs on past the edge of the battlefield, and how far it
 // has fallen by the time it gets there.
 const APRON = 4200;
-const APRON_DROP = 900;
+// It has to fall away STEEPLY, not drift out level.
+//
+// At nine hundred over four thousand two hundred the skirt lay almost flat, so
+// from a camera down near the edge of the map you were looking straight along
+// it and a sheet with no thickness collapses, in that view, to a line. The sky
+// is drawn with the depth test off so that everything paints over it, and the
+// result was a thin dark streak running from the corner of the battlefield
+// clear across the sky to the horizon - reported, exactly and fairly, as a tall
+// line going off to infinity. Dropped this far it is under the eye long before
+// it is far enough away to be seen edge-on.
+const APRON_DROP = 3000;
 
 /**
  * The land beyond the map.
@@ -680,6 +690,9 @@ function buildApron(geo, col, segX, segY, W, H) {
     pos[k * 6 + 3] = lx + ox * APRON;
     pos[k * 6 + 4] = ly - APRON_DROP;
     pos[k * 6 + 5] = lz + oz * APRON;
+    // A middle rib, pulled well below the straight line between the two, so the
+    // skirt leaves the battlefield as a curve rather than a ramp and presents a
+    // face to the eye from every angle instead of an edge from some of them.
     for (let ch = 0; ch < 3; ch++) {
       const v = col[i * 3 + ch];
       c[k * 6 + ch] = v;

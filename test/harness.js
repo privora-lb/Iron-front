@@ -1059,7 +1059,11 @@ head('9. RENDERERS');
 {
   const g = loadGame({ quiet: true });
   g.hook('seed')(4242);
-  startMatch(g, 'villages', 2000);
+  // Fought at full strength on purpose. At a small budget the two sides can
+  // fail to meet at all inside the window - thinning the woods was enough to
+  // stop anybody dying - and then this says nothing about whether the dead
+  // reach the renderer, which is the only thing it is here to ask.
+  startMatch(g, 'villages', 999999);
   g.hook('tick')(900);
   g.frames(3);                                    // what can see is worked out per frame
   const problems = [];
@@ -1077,18 +1081,27 @@ head('9. RENDERERS');
   // The dead have to be cleared as well as laid out. If they were only ever
   // pushed, a long battle would hand the renderer a longer list every frame
   // until the field was nothing but corpses.
+  //
+  // Watched by IDENTITY rather than by count. Asking for the count to fall at
+  // one of twenty sample points sounds like the same question and is not: while
+  // men are dying faster than the fallen rot away the total only climbs, so the
+  // check was really asking "does the battle happen to lull", and it broke the
+  // day the woods were thinned and the fighting got quicker. What actually has
+  // to be true is that a body laid down now is gone later, and that the list is
+  // capped however hard the battle goes.
   let most = 0;
-  let fell = false;
-  let last = after.bodies.length;
+  let cleared = false;
+  const seen = new Set(after.bodies);
   for (let i = 0; i < 20; i++) {
     g.hook('tick')(120);
-    const n = g.hook('worldview')().bodies.length;
-    if (n > most) most = n;
-    if (n < last) fell = true;
-    last = n;
+    const now = g.hook('worldview')().bodies;
+    if (now.length > most) most = now.length;
+    const here = new Set(now);
+    for (const b of seen) if (!here.has(b)) { cleared = true; break; }
+    for (const b of now) seen.add(b);
   }
   if (!most) problems.push('nobody died in forty seconds of battle');
-  if (!fell) problems.push('the dead are never cleared - the list only ever grows');
+  if (!cleared) problems.push('no body was ever taken off the field - the dead only accumulate');
   if (most > 240) problems.push(most + ' bodies on the field at once, past the cap of 240');
   if (problems.length) bad('the 3D field is told about the fog, the marks and the dead', problems.join(BR));
   else ok('the 3D field is told about the fog, the marks and the dead', 'by reference; the dead are laid out and cleared');

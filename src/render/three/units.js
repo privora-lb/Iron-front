@@ -34,9 +34,18 @@ const MAX_DOWN = 260; // the engine keeps no more dead on the field than this
 // churned earth, with the light off him.
 const DEAD = [0.19, 0.19, 0.17];
 
+// What an army actually wears.
+//
+// The cloth was a blue-grey and a mid brown - colours picked to say which side a
+// man was on. That is the helmet's job here, and the marking on a hull; a
+// UNIFORM is drab on purpose, because its whole reason for existing is to be
+// hard to see against ground. Valenmark field their infantry in olive drab and
+// Rothal in a grey-khaki, both desaturated far below anything else on the field,
+// so a man reads as a soldier and the flash of colour on his helmet reads as
+// whose soldier he is.
 const SKIN = {
-  blue: { cloth: [0.29, 0.33, 0.4], armour: [0.27, 0.32, 0.3], mark: [0.36, 0.56, 0.84] },
-  red: { cloth: [0.36, 0.32, 0.25], armour: [0.32, 0.3, 0.23], mark: [0.74, 0.3, 0.22] },
+  blue: { cloth: [0.22, 0.26, 0.19], armour: [0.21, 0.25, 0.21], mark: [0.36, 0.56, 0.84] },
+  red: { cloth: [0.3, 0.28, 0.22], armour: [0.28, 0.26, 0.2], mark: [0.74, 0.3, 0.22] },
 };
 
 function put(mesh, i, x, y, z, rot, sx, sy, sz, pitch) {

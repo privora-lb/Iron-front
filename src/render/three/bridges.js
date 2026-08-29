@@ -80,14 +80,31 @@ export function buildBridges(scene, view) {
     parts.push(m);
     return m;
   };
-  // Counted generously: three crossings, and the biggest is a deck, two
-  // abutments, five piers and two runs of parapet.
-  const decks = bucket(deckMat, list.length * 6 + 2);
-  const stones = bucket(stoneMat, list.length * 10 + 2);
-  const rails = bucket(railMat, list.length * 40 + 2);
-  const posts = bucket(woodMat, list.length * 24 + 2);
+  // Room for every piece, counted from what the loop below actually lays down,
+  // and then some.
+  //
+  // These were guessed and they were guessed SHORT: the deck alone is fourteen
+  // segments plus fourteen of ramp, against a bucket sized for six a crossing.
+  // An InstancedMesh is a fixed buffer; three quietly drops a setMatrixAt past
+  // the end of it, but `count` had already been raised past it too, so the
+  // renderer went on to draw instances whose matrix was still all zeroes. A
+  // zero matrix collapses a box onto the world origin and what you see is a
+  // thin black spike running from the corner of the map off to the horizon,
+  // through everything in between. It is worth over-counting.
+  const N_DECK = 32;   // 14 of roadway, 14 of ramp, and room to spare
+  const N_STONE = 26;  // 5 piers and their cutwaters, 2 abutments, or a ford apron
+  const N_RAIL = 32;   // one run of parapet down each edge
+  const N_POST = 20;   // a ford's marker posts
+  const decks = bucket(deckMat, list.length * N_DECK + 8);
+  const stones = bucket(stoneMat, list.length * N_STONE + 8);
+  const rails = bucket(railMat, list.length * N_RAIL + 8);
+  const posts = bucket(woodMat, list.length * N_POST + 8);
 
   const put = (mesh, x, y, z, yaw, sx, sy, sz) => {
+    // Never past the end. Dropping a piece off the end of a bridge is a missing
+    // pier; raising count past the buffer draws a zero matrix, which is a spike
+    // through the origin across the whole battlefield.
+    if (mesh.count >= mesh.instanceMatrix.count) return;
     Q.setFromAxisAngle(UP, yaw);
     P.set(x, y, z);
     S.set(sx, sy, sz);
