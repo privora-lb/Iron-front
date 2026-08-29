@@ -78,20 +78,63 @@ function instanced(geo, n, scene, opts) {
 // exactly the same bargain with its icons.
 const MAN = 2.3;
 
-/** Legs, and a coat that widens at the shoulder. */
+// Where the hip is, in man-units. Everything above it rides on the walk and
+// everything below it does the walking.
+const HIP = 3.6 * MAN;
+
+/**
+ * The coat, from the hip up, widening at the shoulder.
+ *
+ * Reproportioned: it used to be a barrel two and a third man-units in radius
+ * with legs buried inside it and a helmet nearly as wide as the shoulders, and
+ * close to it read as a skittle. A man is about four times as tall as he is
+ * broad, and the legs have to show below the coat or there is no walk to see.
+ */
 function bodyGeometry() {
-  const legs = new THREE.CylinderGeometry(1.5 * MAN, 1.7 * MAN, 3.4 * MAN, 5);
-  legs.translate(0, 1.7 * MAN, 0);
-  const coat = new THREE.CylinderGeometry(2.3 * MAN, 1.8 * MAN, 4.2 * MAN, 6);
-  coat.translate(0, 5.4 * MAN, 0);
-  return mergeGeometries([legs, coat]) || coat;
+  const coat = new THREE.CylinderGeometry(1.55 * MAN, 1.2 * MAN, 3.2 * MAN, 7);
+  coat.translate(0, 5.1 * MAN, 0);
+  const neck = new THREE.CylinderGeometry(0.5 * MAN, 0.62 * MAN, 0.7 * MAN, 5);
+  neck.translate(0, 6.9 * MAN, 0);
+  return mergeGeometries([coat, neck]) || coat;
+}
+
+/**
+ * One leg, hanging from the origin.
+ *
+ * Built downward from nothing so that the instance can be placed AT the hip and
+ * swung about it: rotate a leg whose origin is at its foot and it scythes
+ * through the ground.
+ */
+function legGeometry() {
+  const g = new THREE.CylinderGeometry(0.42 * MAN, 0.3 * MAN, HIP, 5);
+  g.translate(0, -HIP / 2, 0);
+  const boot = new THREE.BoxGeometry(0.9 * MAN, 0.3 * MAN, 0.42 * MAN);
+  boot.translate(0.14 * MAN, -HIP + 0.15 * MAN, 0);
+  return mergeGeometries([g, boot]) || g;
+}
+
+/**
+ * A rifle, carried across the body.
+ *
+ * The single thing that makes a shape at this distance read as a soldier rather
+ * than as a skittle. It is four hundred triangles for a thousand men and it is
+ * worth more than any of them.
+ */
+function rifleGeometry() {
+  const g = new THREE.BoxGeometry(1, 1, 1);
+  g.scale(4.4 * MAN, 0.28 * MAN, 0.24 * MAN);
+  g.translate(1.3 * MAN, 5.6 * MAN, 0.6 * MAN);
+  return g;
 }
 
 /** A helmet: the one part that says whose army he is in. */
 function helmetGeometry() {
-  const dome = new THREE.SphereGeometry(1.9 * MAN, 7, 4, 0, Math.PI * 2, 0, Math.PI * 0.62);
-  dome.translate(0, 7.9 * MAN, 0);
-  return dome;
+  const dome = new THREE.SphereGeometry(1.02 * MAN, 8, 5, 0, Math.PI * 2, 0, Math.PI * 0.66);
+  dome.translate(0, 7.28 * MAN, 0);
+  // The brim. It is what makes a dome read as a helmet rather than as a head.
+  const brim = new THREE.CylinderGeometry(1.2 * MAN, 1.2 * MAN, 0.16 * MAN, 9);
+  brim.translate(0, 7.3 * MAN, 0);
+  return mergeGeometries([dome, brim]) || dome;
 }
 
 // A four-sided cylinder is a box that can taper, which is what makes a hull
@@ -106,6 +149,9 @@ const slabGeometry = (top, bottom) => {
 export function buildUnits(scene) {
   const men = instanced(bodyGeometry(), MAX_MEN, scene);
   const helms = instanced(helmetGeometry(), MAX_MEN, scene);
+  const legL = instanced(legGeometry(), MAX_MEN, scene);
+  const legR = instanced(legGeometry(), MAX_MEN, scene);
+  const rifles = instanced(rifleGeometry(), MAX_MEN, scene, { color: 0x2c2620 });
 
   const hulls = instanced(slabGeometry(0.38, 0.5), MAX_VEH, scene);
   const turrets = instanced(slabGeometry(0.34, 0.5), MAX_VEH, scene);
@@ -160,7 +206,8 @@ export function buildUnits(scene) {
   const wrecks = instanced(slabGeometry(0.42, 0.5), MAX_DOWN, scene, { color: 0x24211b });
 
   const all = [
-    men, helms, hulls, turrets, tracksL, tracksR, barrels, marks, rotors, rings, shots,
+    men, helms, legL, legR, rifles,
+    hulls, turrets, tracksL, tracksR, barrels, marks, rotors, rings, shots,
     fallen, fallenHelms, wrecks,
   ];
 
@@ -255,11 +302,45 @@ export function buildUnits(scene) {
         }
 
         if (nm >= MAX_MEN) continue;
-        const lean = s.moved ? 0.96 : 1;
-        put(men, nm, s.x, gy, s.y, -s.ang, far, far * lean, far);
+        // The walk, off the simulation's own phase.
+        //
+        // `step` has been advanced by every pace every man has taken since the
+        // battle started — it is saved with the match and it is what the flat
+        // map has always bobbed its men on. The 3D field ignored it entirely
+        // and slid everyone about like counters on a board. A stride, a lift
+        // onto the ball of the foot, a lean into the march and a flinch when he
+        // fires are all already known; none of it is invented here.
+        const stride = Math.sin(s.step);
+        const rise = Math.abs(Math.cos(s.step));
+        const going = s.moved ? 1 : 0;
+        // Never quite still: a man standing is still breathing, and a rank of
+        // perfectly rigid figures is the thing that reads as models on a table.
+        const breathe = Math.sin(v.clock * 2.1 + s.v * 3) * 0.16;
+        const bob = (going ? rise * 1.5 : breathe) * far;
+        const kick = Math.max(0, s.kick || 0);
+        const cs = Math.cos(s.ang);
+        const sn = Math.sin(s.ang);
+        // He rocks back on the shot, and no two men stand quite square.
+        const bx = s.x - cs * kick * 1.6;
+        const by = s.y - sn * kick * 1.6;
+        const face = -(s.ang + s.v * 0.05);
+        const lean = going ? -0.12 : breathe * 0.1; // into the march
+
+        put(men, nm, bx, gy + bob, by, face, far, far, far, lean);
         paint(men, nm, skin.cloth);
-        put(helms, nm, s.x, gy, s.y, -s.ang, far, far * lean, far);
+        put(helms, nm, bx, gy + bob, by, face, far, far, far, lean);
         paint(helms, nm, skin.mark);
+        put(rifles, nm, bx, gy + bob, by, face, far, far, far, lean - kick * 0.35);
+
+        // The legs swing about the hip, a half-pace out of step with each
+        // other. Standing still they hang.
+        const swing = going ? stride * 0.62 : 0;
+        const hipY = gy + bob + HIP * far;
+        const off = 0.55 * MAN * far;
+        put(legL, nm, bx + sn * off, hipY, by - cs * off, face, far, far, far, swing);
+        paint(legL, nm, skin.cloth);
+        put(legR, nm, bx - sn * off, hipY, by + cs * off, face, far, far, far, -swing);
+        paint(legR, nm, skin.cloth);
         nm++;
       }
 
@@ -333,6 +414,9 @@ export function buildUnits(scene) {
       shots.count = ns;
       men.count = nm;
       helms.count = nm;
+      legL.count = nm;
+      legR.count = nm;
+      rifles.count = nm;
       hulls.count = nv;
       turrets.count = nv;
       tracksL.count = nv;

@@ -333,7 +333,8 @@ const slopeMul=(x,y,ang)=>T.slopeMul(terrain,x,y,ang);
 // turn. That is fair without a mirror line down the middle to give it away.
 let riverRow = new Float32Array(1);        // river centre-x, one entry per terrain row
 let laneY = LANE_Y.slice(), div = DIV.slice();
-let CROSS = [{ y:laneY[0], type:'ford' }, { y:laneY[1], type:'bridge' }, { y:laneY[2], type:'ford' }];
+let CROSS = [{ y:laneY[0], type:'ford', hw:78*FS }, { y:laneY[1], type:'bridge', hw:128*FS },
+             { y:laneY[2], type:'ford', hw:78*FS }];
 
 // value noise: a coarse random lattice, smoothly interpolated
 function lattice(w, h) {
@@ -424,13 +425,25 @@ function shapeLandform() {
 // with a gentle pull to the centre so it always parts the two sides, then it is
 // smoothed, made symmetric, and cut into the height field.
 function traceRiver() {
+  // How far the channel may stray from the middle of the map.
+  //
+  // This used to be the middle THIRD, with a pull dragging it back to the
+  // centre on top of that: measured over four seeds and three battlefields, the
+  // river never left the middle fifth of a five-kilometre map, so every match
+  // was fought over the same vertical line and the map never felt different.
+  // The real limits are the two muster zones - a river through your own
+  // deployment ground is unplayable - and those are much further out than a
+  // third. The pull is now a tenth of what it was: enough that the channel
+  // still parts the two sides, not so much that it ignores the valley it is
+  // supposed to be running down.
+  const LO = (TW * .22) | 0, HI = (TW * .78) | 0;
   const col = new Float32Array(TH);            // channel centre, in cells
   let x = (TW / 2) | 0;
   for (let gy = 0; gy < TH; gy++) {
     let best = x, bc = 1e9;
-    for (let dx = -3; dx <= 3; dx++) {
-      const nx = clamp(x + dx, (TW * .34) | 0, (TW * .66) | 0);
-      const pull = Math.abs(nx - (TW - 1) / 2) * .0006;   // it still has to part the two sides
+    for (let dx = -4; dx <= 4; dx++) {
+      const nx = clamp(x + dx, LO, HI);
+      const pull = Math.abs(nx - (TW - 1) / 2) * .00006;
       const c = hGrid[gy * TW + nx] + pull;
       if (c < bc) { bc = c; best = nx; }
     }
@@ -483,7 +496,46 @@ function deriveLanes() {
     return clamp((best + .5) * TG, 200, H - 200);
   });
   div = [(laneY[0] + laneY[1]) / 2, (laneY[1] + laneY[2]) / 2];
-  CROSS = [{ y:laneY[0], type:'ford' }, { y:laneY[1], type:'bridge' }, { y:laneY[2], type:'ford' }];
+  planCrossings();
+}
+
+// Where you can get over the water, and what you get over it on.
+//
+// This used to be [ford, bridge, ford] at the three sector rows, every match,
+// on every battlefield - so there was always exactly one bridge and it was
+// always the middle sector. Measured, it landed on the same row in eleven runs
+// out of twelve. How many crossings there are, what kind they are and where
+// they sit is most of what makes one battlefield play differently from the
+// next, and none of it was being decided.
+//
+// FAIRNESS COMES FIRST. The battlefield is rotationally symmetric about its
+// centre and there is a test that says so; the crossings have to be symmetric
+// too, or one side has a shorter way round and the match is decided by the map.
+// So the outer two are the same kind as each other, the same distance in from
+// their own end, and the middle one - which is its own mirror image - sits on
+// the centre line.
+function planCrossings() {
+  const yOut = clamp(laneY[0] + rnd(-90, 90), 260, H * .38);
+  const wide = () => (112 + rnd(0, 44)) * FS;     // a road bridge
+  const narrow = () => (66 + rnd(0, 30)) * FS;    // a gravel bottom you can wade
+  // Three shapes of battlefield, and none of them is "always a bridge in the
+  // middle": a pair of ways over with nothing between them, one crossing the
+  // whole war has to funnel through, or all three.
+  const roll = R();
+  const outer = roll < .18 ? 'none' : R() < .42 ? 'bridge' : 'ford';
+  let mid = R() < .5 ? 'bridge' : 'ford';
+  if (outer === 'none') mid = R() < .72 ? 'bridge' : 'ford';   // the only way across
+  else if (R() < .22) mid = 'none';                            // two flanks, a hard centre
+  const put = (y, type) => ({ y, type, hw: type === 'bridge' ? wide() : narrow() });
+  CROSS = [];
+  if (outer !== 'none') {
+    const hw = outer === 'bridge' ? wide() : narrow();
+    CROSS.push({ y: yOut, type: outer, hw });
+    CROSS.push({ y: H - yOut, type: outer, hw });        // the same crossing, mirrored
+  }
+  if (mid !== 'none') CROSS.push(put(H / 2, mid));
+  if (!CROSS.length) CROSS.push(put(H / 2, 'bridge'));   // there is always a way over
+  CROSS.sort((a, b) => a.y - b.y);
 }
 
 // Gameplay still sees four elevation steps, so slopeMul, the sight bonus and the
@@ -1175,7 +1227,7 @@ function carveWater(){
   const canal=MAPS[mapType].water==='canal';
   for(let gy=0;gy<TH;gy++){
     const y=gy*TG+TG/2,rx=riverXAt(y);
-    const c=crossFor(y),near=Math.abs(y-c.y)<(c.type==='bridge'?128:78)*FS;
+    const c=crossFor(y),near=!!c&&Math.abs(y-c.y)<c.hw;
     for(let gx=0;gx<TW;gx++){
       const x=gx*TG+TG/2,d=Math.abs(x-rx),i=gy*TW+gx;
       if(d<(canal?30:38)*FS){
@@ -3847,6 +3899,10 @@ function worldView(){
     // array updateVision() fills each tick, and decal is the engine's own
     // canvas - references, so there is exactly one of each on this machine.
     eyes:visionEyes, decal, decalV,
+    // The weather and the life that is already being simulated and was being
+    // drawn only on the flat map: the wind that wanders, the clouds whose
+    // shadows go over the fields, the birds, and the people who live here.
+    wind, clouds, birds, civs,
     viewTeam:viewTeam(), showsTeam:visible
   };
 }

@@ -21,6 +21,8 @@ import { buildDecals } from './decals.js';
 import { buildHedges } from './hedges.js';
 import { buildClutter } from './clutter.js';
 import { buildSky } from './sky.js';
+import { buildWind } from './wind.js';
+import { buildLife } from './life.js';
 
 const FOV = 45;
 const HALF_FOV = Math.tan((FOV / 2) * (Math.PI / 180));
@@ -97,9 +99,11 @@ export function createScene({ canvas, view }) {
   scene.add(sky);
 
   const fog = buildFog({ W: view.terrain.W, H: view.terrain.H }, doc);
+  const weather = buildWind();
 
   let world = null; // terrain mesh, water, props — rebuilt per battlefield
   let clutter = buildClutter(scene);
+  let life = buildLife(scene);
   let sky3 = buildSky(scene);
   let units = buildUnits(scene);
   let dust = buildParticles(scene);
@@ -138,6 +142,11 @@ export function createScene({ canvas, view }) {
     scene.add(water);
     const props = buildProps(scene, v.terrain, v);
     const hedges = buildHedges(scene, v.terrain, v.landuse);
+    // Cloud on the ground, and a wind through everything that grows out of it.
+    weather.shadow(built.mesh.material);
+    for (const m of hedges.meshes) weather.sway(m.material, 0.16);
+    for (const m of props.swaying()) weather.sway(m.material, 0.34);
+    for (const m of clutter.meshes) weather.sway(m.material, 1);
     // The engine's own decal canvas, handed over whole. See decals.js: this is
     // the very sheet the flat map draws, not a copy of it.
     const decals = buildDecals(v.decal, { W: v.terrain.W, H: v.terrain.H });
@@ -291,11 +300,14 @@ export function createScene({ canvas, view }) {
       }
       placeCamera(v);
       clutter.update(v, focusX, focusY, camDist);
-      // The river runs whether or not the battle is paused; it is scenery, and
-      // it is nothing the simulation has ever heard of.
-      setWaterTime((typeof performance !== 'undefined' ? performance.now() : 0) / 1000);
+      // The river runs and the wind blows whether or not the battle is paused;
+      // both are scenery, and neither is anything the simulation has heard of.
+      const now = (typeof performance !== 'undefined' ? performance.now() : 0) / 1000;
+      setWaterTime(now);
+      weather.update(v, now);
       fog.update(v);
       if (world.decals) world.decals.sync(v.clock || 0, v.decalV || 0);
+      life.update(v);
       units.update(v, camDist);
       dust.update(v, camera);
       renderer.render(scene, camera);
@@ -339,6 +351,7 @@ export function createScene({ canvas, view }) {
         fogHome: fog.sample(v.terrain.W * 0.1, v.terrain.H * 0.5),
         hedges: world ? world.hedges.counts : null,
         clutter: clutter.counts(),
+        life: life.counts(),
         decals: !!(world && world.decals),
         marks: world && world.decals ? world.decals.uploads() : 0,
       };
@@ -350,6 +363,8 @@ export function createScene({ canvas, view }) {
       sky3 = null;
       clutter.dispose();
       clutter = null;
+      life.dispose();
+      life = null;
       fog.dispose();
       units.dispose();
       units = null;

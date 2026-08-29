@@ -818,6 +818,67 @@ function ground(map) {
   else ok('sight lines are cast against the real ground');
 }
 
+// One battlefield has to be different from the next.
+//
+// For a long time it was not, and no amount of work on how the ground LOOKED
+// could change that, because the layout was not generated at all: the crossings
+// were rebuilt as [ford, bridge, ford] at the three sector rows every match, so
+// there was always exactly one bridge and it was always the middle sector -
+// measured, it landed on the same row in eleven runs out of twelve - and the
+// river was clamped to the middle third and then pulled to the centre on top of
+// that, so it never left the middle fifth of a five-kilometre map.
+//
+// This is the check that says the map is actually being made. It reads the
+// ground itself - where the river runs and where it can be walked across -
+// rather than any internal table, so it cannot be satisfied by a variable that
+// merely exists.
+{
+  const problems = [];
+  const seen = [];
+  for (const seed of [1, 2, 3, 4, 5, 6]) {
+    const g = loadGame({ quiet: true });
+    g.all('#mapPick [data-map="villages"]')[0].click();
+    g.hook('seed')(seed);
+    g.all('#startVeil [data-budget="2000"]')[0].click();
+    g.el('autoDep').click();
+    g.el('startBattle').click();
+    const t = g.hook('terrain')();
+    const river = (y) => g.hook('river')(y);
+    const wet = (y) => /river|water/i.test((g.hook('cell')(river(y), y).name) || '');
+    const ford = (y) => /ford/i.test((g.hook('cell')(river(y), y).name) || '');
+    const cross = [];
+    let run = null;
+    for (let y = 30; y < t.H; y += 30) {
+      if (!wet(y)) { if (!run) run = { y0: y, y1: y, f: ford(y) }; else { run.y1 = y; run.f = run.f || ford(y); } }
+      else if (run) { cross.push(run); run = null; }
+    }
+    if (run) cross.push(run);
+    const xs = [];
+    for (let y = 0; y <= t.H; y += t.H / 12) xs.push(river(y));
+    const swing = Math.max(...xs) - Math.min(...xs);
+    if (!cross.length) problems.push('seed ' + seed + ': the river cannot be crossed anywhere');
+    // Fair, still: every crossing needs its mirror image, or one side has the
+    // shorter way round and the ground decides the battle.
+    for (const c of cross) {
+      const mid = (c.y0 + c.y1) / 2;
+      if (!cross.some((o) => Math.abs((o.y0 + o.y1) / 2 - (t.H - mid)) < 90))
+        problems.push('seed ' + seed + ': the crossing at ' + Math.round(mid) + ' has no mirror - the map is unfair');
+    }
+    seen.push({ seed, swing, sig: cross.map((c) => Math.round((c.y0 + c.y1) / 200) + (c.f ? 'f' : 'B')).join(',') });
+  }
+  const sigs = new Set(seen.map((s2) => s2.sig));
+  const kinds = new Set(seen.map((s2) => s2.sig.replace(/[0-9]/g, '')));
+  const counts = new Set(seen.map((s2) => s2.sig.split(',').length));
+  const swing = Math.max(...seen.map((s2) => s2.swing));
+  if (sigs.size < 3) problems.push('six seeds produced only ' + sigs.size + ' layouts - the map is not being generated');
+  if (kinds.size < 2) problems.push('the crossings are the same kinds every match (' + [...kinds][0] + ')');
+  if (counts.size < 2) problems.push('there are always exactly ' + [...counts][0] + ' crossings');
+  if (swing < 700) problems.push('the river only wanders ' + Math.round(swing) + ' units across the map');
+  if (problems.length) bad('one battlefield is not the next one', problems.join(BR));
+  else ok('one battlefield is not the next one',
+    sigs.size + ' layouts in 6 seeds, ' + [...counts].sort().join('/') + ' crossings, river wanders ' + Math.round(swing));
+}
+
 /* ------------------------------------------------------------------ */
 /* 9. RENDERERS - two ways of drawing the same battle                  */
 /* ------------------------------------------------------------------ */

@@ -93,6 +93,9 @@ export function buildProps(scene, terrain, view) {
   group.push(keeps);
 
   const api = {
+    /** What bends in the wind. A trunk does not; a crown does. */
+    swaying: () => [crowns],
+
     /** Lay everything out. Cheap enough to redo when something is destroyed. */
     refresh(v) {
       const t = v.terrain;
