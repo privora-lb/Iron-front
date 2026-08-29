@@ -70,11 +70,17 @@ export function buildBase(scene, view) {
     parts.push(m);
     return m;
   };
+  // The five forward positions a side, which were being drawn by NOTHING at all:
+  // the renderer never read view.bases, so a depot or a strongpoint was a patch
+  // of stone-coloured ground with two blast walls beside it and no reason for
+  // the player to believe anything was there.
+  const posts = (view.bases || []).filter(Boolean);
   const n = Math.max(1, list.length);
-  const walls = bucket(boxGeo, wallMat, n * 40);
-  const huts = bucket(hutGeo, hutMat, n * 8);
-  const conc = bucket(boxGeo, concMat, n * 18);
-  const masts = bucket(boxGeo, mastMat, n * 2);
+  const np = Math.max(1, posts.length);
+  const walls = bucket(boxGeo, wallMat, n * 40 + np * 26);
+  const huts = bucket(hutGeo, hutMat, n * 8 + np * 4);
+  const conc = bucket(boxGeo, concMat, n * 18 + np * 12);
+  const masts = bucket(boxGeo, mastMat, n * 2 + np * 2);
 
   const put = (mesh, x, y, z, yaw, sx, sy, sz, col) => {
     Q.setFromAxisAngle(UP, yaw);
@@ -175,9 +181,76 @@ export function buildBase(scene, view) {
     mesh.castShadow = true;
     mesh.frustumCulled = false;
     scene.add(mesh);
-    flags.push({ mesh, base: cloth.attributes.position.array.slice(), team: c.team });
+    flags.push({ mesh, base: cloth.attributes.position.array.slice(), team: c.team, w: FLAG_W });
     parts.push(mesh);
     mats.push(mat);
+  }
+
+  /* ---- the forward positions and the depots ---- */
+  //
+  // A strongpoint is a ring of earth with things sheltering inside it; a depot
+  // is a yard with stores stacked in it. Both get a mast with a small colour on
+  // it, so you can see whose the position is from outside its own wall - which
+  // is the whole point of holding one.
+  for (const b of posts) {
+    const skin = TEAM[b.team] || TEAM.blue;
+    const g0 = groundY(t, b.x, b.y);
+    const depot = b.i >= 3;
+    const face = b.team === 'blue' ? 1 : -1;      // which way the enemy is
+
+    // an earth revetment, open toward its own rear so vehicles can get in
+    for (let a = 0; a < 14; a++) {
+      const th = (a / 14) * Math.PI * 2;
+      const nx = Math.cos(th);
+      if (nx * face < -0.55) continue;            // the gap, on the friendly side
+      const px = b.x + nx * 96;
+      const pz = b.y + Math.sin(th) * 82;
+      put(walls, px, groundY(t, px, pz) - 3, pz, th, 26, 13 + ((a % 3) * 2), 11);
+    }
+
+    if (depot) {
+      // stores: crates in stacks and a run of fuel drums
+      for (let i = 0; i < 6; i++) {
+        const px = b.x - face * 30 + (i % 3) * 30;
+        const pz = b.y - 40 + ((i / 3) | 0) * 34;
+        const g = groundY(t, px, pz);
+        put(conc, px, g - 2, pz, i * 0.4, 24, 12 + (i % 2) * 8, 20);
+      }
+      for (let i = 0; i < 5; i++) {
+        const px = b.x + face * 46;
+        const pz = b.y - 40 + i * 20;
+        put(walls, px, groundY(t, px, pz) - 1, pz, 0, 11, 15, 11);
+      }
+    } else {
+      // a strongpoint: a dug-in shelter and a gun pit facing the enemy
+      put(conc, b.x - face * 26, g0 - 3, b.y, 0, 46, 17, 62);
+      for (let a = 0; a < 6; a++) {
+        const th = -Math.PI / 2 + (a / 5) * Math.PI;
+        const px = b.x + face * 44 + Math.cos(th) * 26 * face;
+        const pz = b.y + Math.sin(th) * 26;
+        put(walls, px, groundY(t, px, pz) - 2, pz, th, 13, 9, 9);
+      }
+    }
+    // two tents behind the wall
+    for (let i = 0; i < 2; i++) {
+      const px = b.x - face * 52;
+      const pz = b.y - 26 + i * 52;
+      put(huts, px, groundY(t, px, pz) + 8, pz, 0, 34, 17, 22);
+    }
+    // the mast, and a small colour on it
+    const mg = groundY(t, b.x, b.y);
+    put(masts, b.x, mg + 2, b.y, 0, 3, 46, 3);
+    const small = new THREE.PlaneGeometry(FLAG_W * 0.42, FLAG_H * 0.42, 8, 3);
+    small.translate((FLAG_W * 0.42) / 2, 0, 0);
+    const smat = new THREE.MeshLambertMaterial({ color: skin.flag, side: THREE.DoubleSide });
+    const smesh = new THREE.Mesh(small, smat);
+    smesh.position.set(b.x + 1.5, mg + 2 + 46 - FLAG_H * 0.32, b.y);
+    smesh.frustumCulled = false;
+    scene.add(smesh);
+    flags.push({ mesh: smesh, base: small.attributes.position.array.slice(), team: b.team,
+                 w: FLAG_W * 0.42 });
+    parts.push(smesh);
+    mats.push(smat);
   }
 
   for (const m of parts) if (m.isInstancedMesh) m.instanceMatrix.needsUpdate = true;
@@ -185,7 +258,8 @@ export function buildBase(scene, view) {
 
   return {
     meshes: parts,
-    counts: { wall: walls.count, hut: huts.count, conc: conc.count, flag: flags.length },
+    counts: { wall: walls.count, hut: huts.count, conc: conc.count, flag: flags.length,
+      posts: posts.length },
 
     /**
      * The cloth. A flag that hangs dead still is worse than no flag: it is the
@@ -203,7 +277,7 @@ export function buildBase(scene, view) {
         for (let i = 0; i < a.length; i += 3) {
           const x = f.base[i];
           const y = f.base[i + 1];
-          const grip = x / FLAG_W; // 0 at the mast, 1 at the fly
+          const grip = x / (f.w || FLAG_W); // 0 at the mast, 1 at the fly
           a[i + 2] = Math.sin(x * 0.16 - t2 * 6) * 5.5 * grip * gust + Math.sin(y * 0.2 + t2 * 3) * 1.4 * grip;
           a[i + 1] = y - grip * grip * 3.5; // it sags as it reaches away
         }

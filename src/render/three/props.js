@@ -171,11 +171,29 @@ export function buildProps(scene, terrain, view) {
     refresh(v) {
       const t = v.terrain;
 
+      // A tree standing inside a position nobody could see past.
+      //
+      // The engine already clears the WOOD flag under a base - so the ground
+      // there gives no cover and the simulation knows it - but the trunks are
+      // planted afterwards and were left standing, which put a closed canopy
+      // over every depot and strongpoint on the field. Five bases a side were
+      // being built and none of them could be seen.
+      //
+      // This is hidden HERE, in the renderer, and not felled in the engine: a
+      // tree is simulation state, it is written into the save, and killing four
+      // hundred of them at world-build time made every saved battle come back
+      // different. The renderer reads the world; it does not get to edit it.
+      const yards = v.bases || [];
+      const inYard = (x, y) => {
+        for (const b of yards) if (Math.abs(x - b.x) < 130 && Math.abs(y - b.y) < 118) return true;
+        return false;
+      };
       for (let i = 0; i < trees.length; i++) {
         const tr = trees[i];
-        if (!tr || tr.dead) {
+        if (!tr || tr.dead || inYard(tr.x, tr.y)) {
           hide(trunks, i);
           hide(crowns, i);
+          hide(broads, i);          // a felled broadleaf must lose its crown too
           continue;
         }
         const gy = groundY(t, tr.x, tr.y);

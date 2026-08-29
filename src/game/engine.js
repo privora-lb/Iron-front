@@ -542,10 +542,19 @@ function planCrossings() {
   // middle": a pair of ways over with nothing between them, one crossing the
   // whole war has to funnel through, or all three.
   const roll = R();
-  const outer = roll < .18 ? 'none' : R() < .42 ? 'bridge' : 'ford';
+  let outer = roll < .18 ? 'none' : R() < .42 ? 'bridge' : 'ford';
   let mid = R() < .5 ? 'bridge' : 'ford';
   if (outer === 'none') mid = R() < .72 ? 'bridge' : 'ford';   // the only way across
   else if (R() < .22) mid = 'none';                            // two flanks, a hard centre
+  // There is ALWAYS at least one road bridge.
+  //
+  // When the kinds were rolled freely, a good many battlefields came out with
+  // nothing but fords on them - and a ford is a shallow place, not a structure,
+  // so it is built as a stone apron and a line of posts and nothing stands up
+  // out of the water at all. Played, that reads as "the bridges are gone",
+  // which is exactly what it was reported as. A bridge is the landmark the
+  // whole crossing fight is named after; every field gets one.
+  if (outer !== 'bridge' && mid !== 'bridge') { if (mid === 'none') outer = 'bridge'; else mid = 'bridge'; }
   const put = (y, type) => ({ y, type, hw: type === 'bridge' ? wide() : narrow() });
   CROSS = [];
   if (outer !== 'none') {

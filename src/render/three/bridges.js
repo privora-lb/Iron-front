@@ -21,9 +21,9 @@ import { groundY } from './terrainMesh.js';
 // A deck two lanes wide, and long enough to land on dry ground at both ends.
 // The channel is about 130 units across and the marsh either side takes it to
 // 200, so a span under 300 would stand in the water it is supposed to cross.
-const DECK_HW = 46; // half-width of the roadway
-const RAIL_H = 9;
-const PIER_W = 26;
+const DECK_HW = 62; // half-width of the roadway - two lanes and a footway each side
+const RAIL_H = 13;
+const PIER_W = 34;
 
 const M = new THREE.Matrix4();
 const Q = new THREE.Quaternion();
