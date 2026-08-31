@@ -18,7 +18,17 @@ export const MAPS={
     // snow and bare rock, the east into pasture. Both banks are tinted, not just
     // one - leaving the far side untouched gave two shades of the same country
     // rather than two countries.
-    split:{west:{tint:1,ground:[1,1,1],fir:1},
+    //
+    // These are colours as they are SEEN, converted to reflectances when the
+    // ground is built (see materials.js). Snow reads as snow because it is
+    // cold: pulled toward blue rather than left neutral, because a bright
+    // neutral surface under a warm sun is sand, and that is exactly what the
+    // west bank looked like while it was set to a flat white.
+    // Snow, not paper. Fresh snow reflects about four fifths of the light on
+    // it and it is very slightly blue; set to a flat 1 it reflects ALL of it,
+    // which under a physical sun clips to white across the whole west bank and
+    // takes the drifts, the tracks and the shadows on it with it.
+    split:{west:{tint:1,ground:[0.46,0.51,0.61],fir:1},
            east:{tint:.9,ground:[0.20,0.36,0.12],fir:0}}},
   villages:{name:'River Villages',water:'river',
     blurb:'Farmland, woods and two hamlets astride a river',

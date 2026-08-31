@@ -17,6 +17,7 @@
 import * as THREE from 'three';
 import { groundY } from './terrainMesh.js';
 import { WATER, FORD, ROAD, STONE, BUILD, RUBBLE, CLIFF, WOOD } from '../../world/terrain.js';
+import { surface, albedo } from './materials.js';
 
 // A boundary planted every nine metres, thinned onto a seven-metre grid.
 // The grid does two jobs: neighbouring plots share a boundary and would
@@ -129,9 +130,9 @@ export function buildHedges(scene, terrain, landuse) {
   const bushes = mesh(
     bushGeometry(),
     hedge,
-    new THREE.MeshLambertMaterial({ color: 0xffffff, vertexColors: false }),
+    surface('foliage', { color: 0xffffff }),
   );
-  const stones = mesh(stoneGeometry(), wall, new THREE.MeshLambertMaterial({ color: 0x8b8676 }));
+  const stones = mesh(stoneGeometry(), wall, surface('stone', { color: 0x8b8676 }));
 
   // A hedge is planted; it does not move afterwards, so this runs once.
   for (let i = 0; i < hedge.length; i += 4) {
@@ -155,7 +156,7 @@ export function buildHedges(scene, terrain, landuse) {
     M.compose(P, Q, S);
     bushes.setMatrixAt(j, M);
     const g = 0.3 + r * 0.09;
-    C.setRGB(g * 0.62, g * 1.05, g * 0.5);
+    albedo(C, g * 0.62, g * 1.05, g * 0.5);
     bushes.setColorAt(j, C);
   }
   bushes.instanceMatrix.needsUpdate = true;

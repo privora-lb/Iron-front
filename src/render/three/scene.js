@@ -25,6 +25,8 @@ import { buildClutter } from './clutter.js';
 import { buildSky } from './sky.js';
 import { buildWind } from './wind.js';
 import { buildLife } from './life.js';
+import { buildDebris } from './debris.js';
+import { buildEnvironment } from './materials.js';
 
 const FOV = 45;
 const HALF_FOV = Math.tan((FOV / 2) * (Math.PI / 180));
@@ -81,14 +83,38 @@ export function createScene({ canvas, view }) {
   // worked into them went with it. A filmic curve rolls the highlights off
   // instead, which is what lets midday look like midday.
   renderer.toneMapping = THREE.ACESFilmicToneMapping;
-  renderer.toneMappingExposure = 1.05;
+  // A shade under the 1.05 it was. With the ground and the armour on physical
+  // materials the field now gains the light the sky bounces into it as well as
+  // the light the sun puts on it, and at the old exposure a chalk field at
+  // midday went to paper white with all the grain worked into it lost. Pulled
+  // much further back than this and midday reads as an overcast afternoon,
+  // which is the other way to get it wrong.
+  renderer.toneMappingExposure = 0.92;
 
   const scene = new THREE.Scene();
+  // THE SKY, AS SOMETHING TO REFLECT.
+  //
+  // Physical materials need an environment or they have nothing to be shiny
+  // against: a gun tube with no sky in it renders as flat black, and a sloped
+  // plate loses the broad sheen down it that is the only reason it reads as
+  // painted steel. This is a small procedural sky and ground bounce, prefiltered
+  // once at start-up, and it is what most separates this from the flat-lit
+  // version — the underside of every hull and every man's face now catches
+  // light from somewhere rather than falling to pure shadow.
+  const envMap = buildEnvironment(renderer);
+  scene.environment = envMap;
   const camera = new THREE.PerspectiveCamera(FOV, 1, 8, 14000);
 
   const sun = new THREE.DirectionalLight(0xffe9c4, 1.2);
   sun.castShadow = true;
   sun.shadow.mapSize.set(2048, 2048);
+  // A shadow that lands exactly on the surface casting it stripes it with the
+  // shadow map's own resolution. Pushed off along the normal rather than by
+  // depth, which is what keeps a shadow ATTACHED: bias it by depth and a tank's
+  // shadow slides away downhill from the tank and the thing reads as a sticker
+  // laid on the ground beside it.
+  sun.shadow.normalBias = 0.6;
+  sun.shadow.bias = -0.0004;
   const sc = sun.shadow.camera;
   sc.near = 200;
   // Mountains stand two and a half times as tall as they used to, and a shadow
@@ -109,6 +135,7 @@ export function createScene({ canvas, view }) {
   let sky3 = buildSky(scene);
   let units = buildUnits(scene);
   let dust = buildParticles(scene);
+  let debris = buildDebris(scene);
   let worldId = -1;
   let treesDown = -1;
   let ruins = -1;
@@ -224,9 +251,20 @@ export function createScene({ canvas, view }) {
     // Nothing here is bright enough to blow out now.
     // Brighter than it looks: the tone curve above takes the top off, so the
     // sun has to be pushed well past one for a midday field to read as lit.
-    sun.intensity = 0.3 + 2.15 * light;
+    // The environment now carries the ambient half of the lighting, so the sun
+    // no longer has to do both jobs at once — which is what was blowing the
+    // highlights out to reach a believable shadow.
+    // Set against REFLECTANCES rather than against painted colours (see the
+    // conversion in materials.js): the ground now reflects about a sixth of
+    // what lands on it instead of a third, so the sun has to be roughly twice
+    // what it was to light the same field to the same brightness. That is the
+    // trade, and it is worth making — the difference between a bright surface
+    // and a dark one is now the real one, so a road reads paler than a field
+    // instead of both running together at the top of the scale.
+    sun.intensity = 0.3 + 2.6 * light;
+    scene.environmentIntensity = 0.25 + 0.94 * light;
     sun.color.setRGB(1, 0.86 + 0.14 * light, 0.66 + 0.34 * light);
-    sky.intensity = 0.26 + 0.62 * light;
+    sky.intensity = 0.15 + 0.36 * light;
     sky.color.setRGB(0.5 + 0.24 * light, 0.6 + 0.24 * light, 0.78 + 0.22 * light);
     if (scene.fog) {
       // Outside the battlefield is BLACK.
@@ -330,6 +368,10 @@ export function createScene({ canvas, view }) {
       life.update(v);
       units.update(v, camDist);
       dust.update(v, camera);
+      // Everything with weight: earth thrown out of a shell strike, spent
+      // cases, muzzle blast, the dust off a track. Stepped on the wall clock,
+      // like the river and the wind, and never read by the simulation.
+      debris.update(v, camera, now, units.events);
       renderer.render(scene, camera);
     },
 
@@ -374,6 +416,8 @@ export function createScene({ canvas, view }) {
         base: world ? world.base.counts : null,
         clutter: clutter.counts(),
         life: life.counts(),
+        units: units.counts(),
+        debris: debris.counts(),
         decals: !!(world && world.decals),
         marks: world && world.decals ? world.decals.uploads() : 0,
       };
@@ -406,6 +450,10 @@ export function createScene({ canvas, view }) {
       units = null;
       dust.dispose();
       dust = null;
+      debris.dispose();
+      debris = null;
+      scene.environment = null;
+      envMap.dispose();
       renderer.dispose();
     },
   };

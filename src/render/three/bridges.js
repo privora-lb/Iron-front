@@ -17,6 +17,7 @@
 // walking over it is decided in the terrain model; this is only what he sees.
 import * as THREE from 'three';
 import { groundY } from './terrainMesh.js';
+import { surface } from './materials.js';
 
 // A deck two lanes wide, and long enough to land on dry ground at both ends.
 // The channel is about 130 units across and the marsh either side takes it to
@@ -68,10 +69,10 @@ export function buildBridges(scene, view) {
   // Concrete, and the darker stone of the piers and abutments. Flat-lit rather
   // than shiny: wet concrete under a midday sun is the one thing that would
   // read as plastic.
-  const deckMat = new THREE.MeshLambertMaterial({ color: 0x9a958b });
-  const stoneMat = new THREE.MeshLambertMaterial({ color: 0x6f6a61 });
-  const railMat = new THREE.MeshLambertMaterial({ color: 0x8d8880 });
-  const woodMat = new THREE.MeshLambertMaterial({ color: 0x5d4d38 });
+  const deckMat = surface('concrete', { color: 0x9a958b });
+  const stoneMat = surface('stone', { color: 0x6f6a61 });
+  const railMat = surface('steel', { color: 0x8d8880 });
+  const woodMat = surface('wood', { color: 0x5d4d38 });
   const mats = [deckMat, stoneMat, railMat, woodMat];
 
   const geo = box();

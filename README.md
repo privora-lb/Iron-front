@@ -30,9 +30,16 @@ larger formations and a bigger command as you climb.
 - **Total War** removes every limit
 - **Save and load:** eight slots plus an autosave when the game is
   backgrounded, from the pause menu or the start screen
-- **Fought in 3D:** real ground, shadows that follow the hour, tank turrets
-  that traverse. The top-down map is still there in the pause menu, and a
+- **Fought in 3D:** real ground under physical light, shadows that follow the
+  hour, and armour that lies on the slope it is standing on — a tank noses up a
+  bank, leans on a camber and squats when its gun fires. Five silhouettes to
+  tell apart at a glance: tank, wheeled carrier, self-propelled gun, rocket
+  battery and gunship. The top-down map is still there in the pause menu, and a
   device that cannot run WebGL is given it without being asked
+- **Weight:** shell strikes throw earth that arcs and rains back down, spent
+  cases tumble out of a breech and skitter, muzzle blast lights the ground and
+  dust rolls off a track and drifts downwind — all of it outside the
+  simulation, none of it able to touch a match
 
 Controls: tap a unit card then the ground to deploy · tap markers to select ·
 tap ground to move · tap an enemy to engage · number keys 1–9 for groups ·
@@ -64,6 +71,11 @@ src/
   core/               seeded rng, math, dom, polyfills
   game/engine.js      simulation, HUD, input, the top-down renderer
   render/three/       the 3D battlefield — loaded only when it is switched on
+                      materials.js  what things are made of, and the one place
+                                    an authored colour becomes a reflectance
+                      kit.js        every shape an army puts on the field
+                      units.js      where each of those shapes stands this frame
+                      debris.js     the things that are thrown, and where they land
   world/              the battlefield as data and as generation: the terrain
                       model, where water runs, where roads go, what grows
   platform/           Capacitor bridge, storage, saved battles, service worker

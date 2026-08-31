@@ -17,6 +17,7 @@
 import * as THREE from 'three';
 import { groundY } from './terrainMesh.js';
 import { WATER, FORD, ROAD, STONE, BUILD, RUBBLE, CLIFF, SCORCH } from '../../world/terrain.js';
+import { albedo } from './materials.js';
 
 // Past this the camera is a commander's, not a soldier's, and a tuft of grass
 // is a sub-pixel speck that costs a draw call to be invisible.
@@ -157,7 +158,7 @@ export function buildClutter(scene) {
           M.compose(P, Q, S);
           stones.setMatrixAt(ns, M);
           const g = 0.3 + h2 * 0.16;
-          C.setRGB(g * 1.05, g, g * 0.9);
+          albedo(C, g * 1.05, g, g * 0.9);
           stones.setColorAt(ns, C);
           ns++;
           continue;
@@ -180,7 +181,7 @@ export function buildClutter(scene) {
         // of one green is a lawn, and nothing in the country is a lawn.
         const dry = 0.3 + h * 0.26 - wet * 0.14;
         const straw = h2 * h2;
-        C.setRGB(dry * (0.86 + straw * 0.5), dry * (1.18 - straw * 0.2), dry * (0.48 + straw * 0.1));
+        albedo(C, dry * (0.86 + straw * 0.5), dry * (1.18 - straw * 0.2), dry * (0.48 + straw * 0.1));
         grass.setColorAt(ng, C);
         ng++;
       }

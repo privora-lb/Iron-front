@@ -51,7 +51,17 @@ click on is the HUD that ships.
 9. **RENDERERS** — the same battle can be drawn two ways. The 3D ground is
    laid over the battlefield the right way round, a device with no WebGL is
    refused the 3D view and keeps playing, and both renderers read one world
-   rather than a copy each.
+   rather than a copy each. The section also asks a question that sounds like
+   taste and is not: **does the ground reflect a believable amount of light?**
+   Grass, soil, stone and made roads all return between a tenth and a third of
+   what lands on them, and only snow gets near four fifths. `albedorun.mjs`
+   builds each battlefield's ground and measures it, one river bank at a time,
+   because a bright snowfield on one bank would otherwise hide a blown-out farm
+   on the other. Ground authored above those figures cannot be lit to look like
+   ground — turn the sun down until it stops glaring and the sky goes out with
+   it — and that is precisely the state every map was in while its palette was
+   being handed to a physical renderer as reflectance without ever being
+   converted out of sRGB.
 
 ## Testing a renderer with no screen
 

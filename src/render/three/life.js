@@ -13,6 +13,7 @@
 // them be free in lockstep.
 import * as THREE from 'three';
 import { groundY } from './terrainMesh.js';
+import { albedo } from './materials.js';
 
 const MAX_CIVS = 260;
 const MAX_BIRDS = 90;
@@ -114,10 +115,10 @@ export function buildLife(scene) {
         const pitch = down ? 1.32 : Math.sin(c.ph * 2) * 0.05;
         put(bodies, n, c.x, gy + bob, c.y, -c.ang, 1, pitch);
         const g = c.job === 'farmer' ? 0.42 : 0.34;
-        C.setRGB(g * 1.16, g * 1.02, g * 0.8);
+        albedo(C, g * 1.16, g * 1.02, g * 0.8);
         bodies.setColorAt(n, C);
         put(heads, n, c.x, gy + bob, c.y, -c.ang, 1, pitch);
-        C.setRGB(0.66, 0.53, 0.4);
+        albedo(C, 0.66, 0.53, 0.4);
         heads.setColorAt(n, C);
         n++;
       }

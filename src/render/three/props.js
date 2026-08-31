@@ -9,6 +9,8 @@
 import * as THREE from 'three';
 import { groundY } from './terrainMesh.js';
 import { mergeGeometries } from 'three/examples/jsm/utils/BufferGeometryUtils.js';
+import { onCompile } from './shader.js';
+import { surface, albedo } from './materials.js';
 
 const M = new THREE.Matrix4();
 const Q = new THREE.Quaternion();
@@ -40,6 +42,107 @@ function instanced(geo, mat, n, scene) {
   return mesh;
 }
 
+
+/**
+ * Windows and a door, worked out per pixel rather than modelled.
+ *
+ * A village was forty featureless boxes with a roof on each, and a box with no
+ * openings in it does not read as somewhere anybody lives — it reads as
+ * packaging. Modelling the windows is out of the question: every house is one
+ * instance of one shared box, so any geometry added to it appears on all of
+ * them in the same place at the same size however big or small the house is.
+ *
+ * Worked out in the shader from the fragment's position on the WALL, in world
+ * units, it comes out right on every house: a cottage gets three windows and a
+ * town house gets two rows of eight, at the same size, with the same sills,
+ * because the spacing is measured in units of ground rather than in fractions
+ * of a wall. One extra varying, no extra geometry, no extra draw call.
+ */
+function houseShader(material) {
+  onCompile(material, 'if-house', (shader) => {
+    shader.vertexShader = shader.vertexShader
+      .replace(
+        '#include <common>',
+        `#include <common>
+varying vec3 vIfLocal;
+varying vec3 vIfSize;
+varying vec3 vIfFace;`,
+      )
+      .replace(
+        '#include <begin_vertex>',
+        `#include <begin_vertex>
+  vIfLocal = transformed;
+  vIfFace = normal;
+  #ifdef USE_INSTANCING
+    vIfSize = vec3( length( instanceMatrix[ 0 ].xyz ),
+                    length( instanceMatrix[ 1 ].xyz ),
+                    length( instanceMatrix[ 2 ].xyz ) );
+  #else
+    vIfSize = vec3( 1.0 );
+  #endif`,
+      );
+    shader.fragmentShader = shader.fragmentShader
+      .replace(
+        '#include <common>',
+        `#include <common>
+varying vec3 vIfLocal;
+varying vec3 vIfSize;
+varying vec3 vIfFace;`,
+      )
+      // After the normal is read and before the light is worked out, so the
+      // glass can be given a different roughness from the render around it —
+      // which is the whole reason a window reads as glass and not as a hole.
+      .replace(
+        '#include <normal_fragment_maps>',
+        `#include <normal_fragment_maps>
+  {
+    vec3 ifN = abs( vIfFace );
+    // A heap of rubble has no windows in it, and neither has a wall too short
+    // to put one in.
+    if ( ifN.y < 0.5 && vIfSize.y > 17.0 ) {
+      // where this pixel is on the wall, in world units: along it, and up it
+      float ifAlong = ifN.x > ifN.z ? vIfLocal.z * vIfSize.z : vIfLocal.x * vIfSize.x;
+      float ifUp = vIfLocal.y * vIfSize.y;
+      float ifWide = ifN.x > ifN.z ? vIfSize.z : vIfSize.x;
+
+      // Windows are set out from the MIDDLE of the wall outwards, so a wall
+      // always has one centred pier rather than a half window sliced off at
+      // the corner, and the run stops short of both ends.
+      const float PITCH = 15.0;
+      float ifCol = ifAlong - PITCH * floor( ifAlong / PITCH + 0.5 );
+      float ifEdge = ifWide * 0.5 - abs( ifAlong );
+
+      float ifPane = 0.0;
+      float ifFrame = 0.0;
+      for ( int r = 0; r < 3; r++ ) {
+        float ifRowY = 11.0 + float( r ) * 16.0;
+        if ( ifRowY + 7.0 > vIfSize.y ) break; // no window through the eaves
+        float ifDy = abs( ifUp - ifRowY );
+        if ( ifEdge > 7.0 ) {
+          if ( abs( ifCol ) < 3.1 && ifDy < 4.2 ) ifPane = 1.0;
+          else if ( abs( ifCol ) < 4.2 && ifDy < 5.3 ) ifFrame = 1.0;
+        }
+      }
+      // A door, on one wall only, standing on the ground.
+      if ( vIfFace.x > 0.5 && abs( ifAlong ) < 3.2 && ifUp < 13.0 ) ifPane = 0.0, ifFrame = 1.0;
+      if ( vIfFace.x > 0.5 && abs( ifAlong ) < 2.4 && ifUp < 11.6 ) ifPane = 1.0;
+
+      // A sill under each window and a plinth round the foot of the house: two
+      // horizontal lines are most of what stops a wall reading as a flat panel.
+      if ( ifUp < 2.2 ) ifFrame = max( ifFrame, 0.7 );
+
+      diffuseColor.rgb = mix( diffuseColor.rgb, vec3( 0.86, 0.85, 0.82 ), ifFrame * 0.55 );
+      // Glass is dark because it is a hole with a room behind it, and it is
+      // SMOOTH, so it takes the sky. That reflection is the whole tell.
+      diffuseColor.rgb = mix( diffuseColor.rgb, vec3( 0.05, 0.06, 0.07 ), ifPane );
+      roughnessFactor = mix( roughnessFactor, 0.08, ifPane );
+      metalnessFactor = mix( metalnessFactor, 0.6, ifPane );
+    }
+  }`,
+      );
+  });
+}
+
 /**
  * Build every standing thing for one battlefield. Returns an object with a
  * refresh() for what changes during a battle — a felled wood, a collapsed
@@ -53,6 +156,56 @@ export function buildProps(scene, terrain, view) {
   const trunkGeo = new THREE.CylinderGeometry(0.13, 0.24, 1, 6);
   trunkGeo.translate(0, 0.5, 0);
 
+  /**
+   * Pull every vertex about at random, so an outline that was a polyhedron
+   * becomes an outline that could be foliage.
+   *
+   * Seeded off the vertex INDEX rather than off anything the simulation keeps,
+   * and baked once into a shared geometry — so every tree on the field is
+   * ragged in exactly the same way, which nobody has ever noticed on a wood
+   * seen from two hundred metres, and it costs nothing at all per tree.
+   */
+  function rag(g, amount, seed) {
+    const p = g.attributes.position;
+    for (let i = 0; i < p.count; i++) {
+      let h = ((i + seed) * 374761393) | 0;
+      h = (h ^ (h >>> 13)) * 1274126177;
+      const a = (((h ^ (h >>> 16)) >>> 0) / 4294967296 - 0.5) * 2 * amount;
+      p.setXYZ(i, p.getX(i) * (1 + a), p.getY(i) * (1 + a * 0.7), p.getZ(i) * (1 + a));
+    }
+    g.computeVertexNormals();
+    return g;
+  }
+
+  /**
+   * Darken the underside of a crown.
+   *
+   * Light does not get into the bottom of a tree, and a crown lit evenly all
+   * round is a green ball. There is no ambient occlusion to be had here, so it
+   * is painted into the vertex colours — which three multiplies against the
+   * per-tree instance colour, so both survive.
+   */
+  function shade(g) {
+    const p = g.attributes.position;
+    let lo = Infinity;
+    let hi = -Infinity;
+    for (let i = 0; i < p.count; i++) {
+      const y = p.getY(i);
+      if (y < lo) lo = y;
+      if (y > hi) hi = y;
+    }
+    const span = hi - lo || 1;
+    const col = new Float32Array(p.count * 3);
+    for (let i = 0; i < p.count; i++) {
+      const k = 0.52 + 0.48 * ((p.getY(i) - lo) / span);
+      col[i * 3] = k;
+      col[i * 3 + 1] = k;
+      col[i * 3 + 2] = k;
+    }
+    g.setAttribute('color', new THREE.BufferAttribute(col, 3));
+    return g;
+  }
+
   // A crown is not a cone.
   //
   // Every tree on every battlefield was one seven-sided cone, which is why a
@@ -62,37 +215,47 @@ export function buildProps(scene, terrain, view) {
   // crowns, picked per tree, is the difference between a forest and a pattern.
   function firGeometry() {
     const tiers = [];
-    for (let i = 0; i < 4; i++) {
-      const t = i / 3;                                  // 0 at the foot, 1 at the tip
-      const r = 1 - t * 0.74;
-      const c = new THREE.ConeGeometry(r, 0.46, 7);
-      c.translate(0, 0.16 + t * 0.74, 0);
-      tiers.push(c);
+    // Six skirts rather than four, each turned a little against the one below
+    // and each with its own droop, so the tiers do not stack into one smooth
+    // cone again the moment they are far enough away to blur together.
+    for (let i = 0; i < 6; i++) {
+      const t = i / 5; // 0 at the foot, 1 at the tip
+      const r = (1 - t * 0.8) * (0.94 + (i % 2) * 0.1);
+      const c = new THREE.ConeGeometry(r, 0.38, 8);
+      c.rotateY(i * 0.41);
+      c.translate(0, 0.12 + t * 0.78, 0);
+      tiers.push(rag(c, 0.09, i * 37));
     }
-    const g = mergeGeometries(tiers) || new THREE.ConeGeometry(1, 1, 7);
-    return g;
+    return shade(mergeGeometries(tiers) || new THREE.ConeGeometry(1, 1, 8));
   }
   function broadGeometry() {
     const lobes = [];
-    // one mass and three smaller ones pushed off it, so the outline is lumpy
-    const main = new THREE.IcosahedronGeometry(0.78, 0);
-    main.scale(1, 0.86, 1);
+    // One mass and four smaller ones pushed off it. At detail 0 an
+    // icosahedron is twenty flat faces and a crown built out of them reads,
+    // close up, as a handful of green pebbles; at detail 1 it is eighty, which
+    // is enough that the RAGGING below has something to bite on and the
+    // outline breaks up into something that could be leaves.
+    const main = new THREE.IcosahedronGeometry(0.78, 1);
+    main.scale(1, 0.88, 1);
     main.translate(0, 0.66, 0);
-    lobes.push(main);
-    for (const [dx, dy, dz, r] of [[0.5, 0.5, 0.16, 0.46], [-0.44, 0.58, -0.3, 0.42],
-                                   [0.1, 0.9, -0.42, 0.4]]) {
-      const l = new THREE.IcosahedronGeometry(r, 0);
+    lobes.push(rag(main, 0.15, 3));
+    let k = 11;
+    for (const [dx, dy, dz, r] of [
+      [0.52, 0.48, 0.16, 0.46], [-0.46, 0.58, -0.3, 0.42],
+      [0.1, 0.92, -0.42, 0.4], [-0.2, 0.34, 0.44, 0.38],
+    ]) {
+      const l = new THREE.IcosahedronGeometry(r, 1);
       l.translate(dx, dy, dz);
-      lobes.push(l);
+      lobes.push(rag(l, 0.19, (k += 29)));
     }
-    return mergeGeometries(lobes) || main;
+    return shade(mergeGeometries(lobes) || main);
   }
-  const trunkMat = new THREE.MeshLambertMaterial({ color: 0x4a3a26 });
-  const crownMat = new THREE.MeshLambertMaterial({ color: 0xffffff });
+  const trunkMat = surface('wood', { color: 0x4a3a26 });
+  const crownMat = surface('foliage', { color: 0xffffff, vertexColors: true });
   const trunks = instanced(trunkGeo, trunkMat, trees.length, scene);
   const crowns = instanced(firGeometry(), crownMat, trees.length, scene);
   const broads = instanced(broadGeometry(),
-    new THREE.MeshLambertMaterial({ color: 0xffffff }), trees.length, scene);
+    surface('foliage', { color: 0xffffff, vertexColors: true }), trees.length, scene);
   group.push(trunks, crowns, broads);
   // Which kind a tree is, stably: the same wood every time the world is rebuilt.
   const kindOf = (n) => {
@@ -105,7 +268,8 @@ export function buildProps(scene, terrain, view) {
   const buildings = view.buildings || [];
   const boxGeo = new THREE.BoxGeometry(1, 1, 1);
   boxGeo.translate(0, 0.5, 0);
-  const houseMat = new THREE.MeshLambertMaterial({ color: 0xffffff });
+  const houseMat = surface('concrete', { color: 0xffffff });
+  houseShader(houseMat);
   const houses = instanced(boxGeo, houseMat, buildings.length, scene);
   houses.receiveShadow = true;
   group.push(houses);
@@ -114,12 +278,7 @@ export function buildProps(scene, terrain, view) {
   const roofGeo = new THREE.ConeGeometry(0.72, 1, 4);
   roofGeo.rotateY(Math.PI / 4);
   roofGeo.translate(0, 0.5, 0);
-  const roofs = instanced(
-    roofGeo,
-    new THREE.MeshLambertMaterial({ color: 0xffffff }),
-    buildings.length,
-    scene,
-  );
+  const roofs = instanced(roofGeo, surface('stone'), buildings.length, scene);
   // A second roof: a gable, which is a three-sided prism laid on its side. A
   // village where every house wears the same pyramid reads as one house stamped
   // out forty times, which is exactly what it looked like.
@@ -127,20 +286,11 @@ export function buildProps(scene, terrain, view) {
   gableGeo.rotateY(Math.PI / 6);
   gableGeo.rotateZ(Math.PI / 2);
   gableGeo.translate(0, 0.5, 0);
-  const gables = instanced(
-    gableGeo,
-    new THREE.MeshLambertMaterial({ color: 0xffffff }),
-    buildings.length,
-    scene,
-  );
+  const gables = instanced(gableGeo, surface('stone'), buildings.length, scene);
   group.push(gables);
   // and a chimney on the ones that have a hearth
-  const chimneys = instanced(
-    boxGeo,
-    new THREE.MeshLambertMaterial({ color: 0x6a5a4c }),
-    buildings.length,
-    scene,
-  );
+  const chimneys = instanced(boxGeo, surface('stone', { color: 0x6a5a4c }),
+    buildings.length, scene);
   group.push(chimneys);
   // A stable scatter: the same house is the same house every time the world is
   // rebuilt, and it never touches the simulation's stream.
@@ -153,12 +303,12 @@ export function buildProps(scene, terrain, view) {
 
   /* ---- works and the keeps ---- */
   const WALL_CAP = 400; // works are laid during a battle, not at the start of it
-  const wallMat = new THREE.MeshLambertMaterial({ color: 0x6d6552 });
+  const wallMat = surface('earth', { color: 0x6d6552 });
   const wallMesh = instanced(boxGeo, wallMat, WALL_CAP, scene);
   wallMesh.receiveShadow = true;
   group.push(wallMesh);
 
-  const keepMat = new THREE.MeshLambertMaterial({ color: 0xffffff });
+  const keepMat = surface('stone', { color: 0xffffff });
   const keeps = instanced(boxGeo, keepMat, Math.max(1, (view.castles || []).length), scene);
   keeps.receiveShadow = true;
   group.push(keeps);
@@ -217,13 +367,13 @@ export function buildProps(scene, terrain, view) {
           hide(broads, i);
           place(crowns, i, tr.x, gy + s * 0.72, tr.y, i * 0.7 + lean,
             s * (1 + k * 0.5), s * (2.0 + k * 0.8), s * (1 + k * 0.5));
-          C.setRGB(g * 0.46, g * 0.94, g * 0.5);
+          albedo(C, g * 0.46, g * 0.94, g * 0.5);
           crowns.setColorAt(i, C);
         } else {
           hide(crowns, i);
           place(broads, i, tr.x, gy + s * 1.15, tr.y, i * 0.7 + lean,
             s * (1.5 + k * 0.6), s * (1.5 + k * 0.5), s * (1.5 + k * 0.6));
-          C.setRGB(g * 0.66, g * 1.02, g * 0.36);
+          albedo(C, g * 0.66, g * 1.02, g * 0.36);
           broads.setColorAt(i, C);
         }
       }
@@ -262,7 +412,7 @@ export function buildProps(scene, terrain, view) {
         if (b.dead) {
           // A ruin is a low heap where the house stood.
           place(houses, i, b.x, gy, b.y, b.rot || 0, b.w * 0.9, 5 + fall, b.h * 0.9);
-          C.setRGB(0.36, 0.34, 0.3);
+          albedo(C, 0.36, 0.34, 0.3);
           houses.setColorAt(i, C);
           hide(roofs, i);
           hide(gables, i);
@@ -272,10 +422,10 @@ export function buildProps(scene, terrain, view) {
         place(houses, i, b.x, gy, b.y, b.rot || 0, b.w, tall, b.h);
         // Walls are rendered, plaster, timber and stone, not one grey.
         const w = 0.46 + r * 0.3;
-        if (b.bunker) C.setRGB(0.42, 0.42, 0.4);
-        else if (r < 0.3) C.setRGB(w * 1.06, w * 0.99, w * 0.86);      // limewash
-        else if (r < 0.6) C.setRGB(w * 0.92, w * 0.84, w * 0.72);      // render
-        else C.setRGB(w * 0.78, w * 0.74, w * 0.7);                    // stone
+        if (b.bunker) albedo(C, 0.42, 0.42, 0.4);
+        else if (r < 0.3) albedo(C, w * 1.06, w * 0.99, w * 0.86);      // limewash
+        else if (r < 0.6) albedo(C, w * 0.92, w * 0.84, w * 0.72);      // render
+        else albedo(C, w * 0.78, w * 0.74, w * 0.7);                    // stone
         houses.setColorAt(i, C);
         if (b.bunker) {
           hide(roofs, i);
@@ -300,14 +450,14 @@ export function buildProps(scene, terrain, view) {
           const along = b.w >= b.h ? (b.rot || 0) : (b.rot || 0) + Math.PI / 2;
           place(gables, i, b.x, gy + tall, b.y, along, Math.min(b.w, b.h) * 1.1,
             pitch, Math.max(b.w, b.h) * 1.02);
-          C.setRGB(0.34, 0.22, 0.18);
+          albedo(C, 0.34, 0.22, 0.18);
           gables.setColorAt(i, C);
         }
         if (r > 0.34) {
           place(chimneys, i, b.x + (r - 0.5) * b.w * 0.7, gy + tall,
             b.y + (0.5 - r) * b.h * 0.6, b.rot || 0, 5, pitch + 7, 5);
         } else hide(chimneys, i);
-        C.setRGB(0.3 + r * 0.16, 0.19 + r * 0.09, 0.15 + r * 0.07);   // tile, slate, thatch
+        albedo(C, 0.3 + r * 0.16, 0.19 + r * 0.09, 0.15 + r * 0.07);  // tile, slate, thatch
         roofs.setColorAt(i, C);
         gables.setColorAt(i, C);
       }
@@ -344,8 +494,8 @@ export function buildProps(scene, terrain, view) {
         if (!c.dead) { hide(keeps, i); continue; }
         place(keeps, i, c.x, groundY(t, c.x, c.y), c.y, 0, c.hw * 2, 12, c.hh * 2);
         const dead = c.dead ? 0.4 : 1;
-        if (c.team === 'blue') C.setRGB(0.22 * dead, 0.3 * dead, 0.46 * dead);
-        else C.setRGB(0.44 * dead, 0.19 * dead, 0.15 * dead);
+        if (c.team === 'blue') albedo(C, 0.22, 0.3, 0.46, dead);
+        else albedo(C, 0.44, 0.19, 0.15, dead);
         keeps.setColorAt(i, C);
       }
       keeps.instanceMatrix.needsUpdate = true;

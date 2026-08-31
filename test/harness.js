@@ -978,6 +978,33 @@ head('9. RENDERERS');
   }
 }
 
+// What the ground REFLECTS, on every battlefield.
+//
+// "It looks washed out" sounds like a matter of taste and is not: a surface
+// either returns a believable fraction of the light landing on it or it does
+// not. Grass, soil, stone and made roads all sit between a tenth and a third;
+// only snow gets near four fifths. Ground authored above that cannot be lit to
+// look like ground — turn the sun down until it stops glaring and the sky goes
+// out with it — and that is exactly the state every map was in while its
+// palette was being used as reflectance without being converted out of sRGB.
+for (const map of MAPS) {
+  let out = null;
+  try {
+    out = JSON.parse(execFileSync(
+      process.execPath, [path.join(__dirname, 'albedorun.mjs'), '--map', map],
+      { encoding: 'utf8', maxBuffer: 1 << 24 }).trim().split(BR).pop());
+  } catch (e) {
+    bad(map + ': the ground reflects a believable amount of light',
+      (e.stdout || '') + (e.stderr || '') || e.message);
+  }
+  if (out) {
+    const say = ['west', 'east']
+      .map((k) => k + ' ' + out[k].mean + ' (peak ' + out[k].max + ')').join(', ');
+    if (out.ok) ok(map + ': the ground reflects a believable amount of light', say);
+    else bad(map + ': the ground reflects a believable amount of light', out.fails.join(BR));
+  }
+}
+
 // The engine's own 3D path — the overlay, the strength chips, the minimap on its
 // own canvas — with a renderer that answers like the real one and draws nothing.
 // None of this code is reachable in the 2D path, so nothing else covers it.

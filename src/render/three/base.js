@@ -12,6 +12,7 @@
 // read back by anything that decides a fight.
 import * as THREE from 'three';
 import { groundY } from './terrainMesh.js';
+import { surface, albedo } from './materials.js';
 
 const M = new THREE.Matrix4();
 const Q = new THREE.Quaternion();
@@ -52,10 +53,10 @@ export function buildBase(scene, view) {
   const parts = [];
   const flags = [];
 
-  const wallMat = new THREE.MeshLambertMaterial({ color: 0x6d6552 });
-  const hutMat = new THREE.MeshLambertMaterial({ color: 0x4d5240 });
-  const concMat = new THREE.MeshLambertMaterial({ color: 0x767065 });
-  const mastMat = new THREE.MeshLambertMaterial({ color: 0xb9b6ae });
+  const wallMat = surface('earth', { color: 0x6d6552 });
+  const hutMat = surface('wood', { color: 0x4d5240 });
+  const concMat = surface('concrete', { color: 0x767065 });
+  const mastMat = surface('steel', { color: 0xb9b6ae });
   const mats = [wallMat, hutMat, concMat, mastMat];
 
   const boxGeo = box();
@@ -109,7 +110,7 @@ export function buildBase(scene, view) {
     M.compose(P, Q, S);
     mesh.setMatrixAt(mesh.count, M);
     if (col) {
-      C.setRGB(col[0], col[1], col[2]);
+      albedo(C, col[0], col[1], col[2]);
       mesh.setColorAt(mesh.count, C);
     }
     mesh.count++;
@@ -203,10 +204,7 @@ export function buildBase(scene, view) {
 
     const cloth = new THREE.PlaneGeometry(FLAG_W, FLAG_H, 12, 4);
     cloth.translate(FLAG_W / 2, 0, 0); // hangs off the mast, not centred on it
-    const mat = new THREE.MeshLambertMaterial({
-      color: skin.flag,
-      side: THREE.DoubleSide,
-    });
+    const mat = surface('cloth', { color: skin.flag, side: THREE.DoubleSide });
     const mesh = new THREE.Mesh(cloth, mat);
     mesh.position.set(mx + 2, mg + 6 + MAST_H - FLAG_H * 0.75, mz);
     mesh.castShadow = true;
@@ -275,7 +273,7 @@ export function buildBase(scene, view) {
     put(masts, b.x, mg + 2, b.y, 0, 3, 46, 3);
     const small = new THREE.PlaneGeometry(FLAG_W * 0.42, FLAG_H * 0.42, 8, 3);
     small.translate((FLAG_W * 0.42) / 2, 0, 0);
-    const smat = new THREE.MeshLambertMaterial({ color: skin.flag, side: THREE.DoubleSide });
+    const smat = surface('cloth', { color: skin.flag, side: THREE.DoubleSide });
     const smesh = new THREE.Mesh(small, smat);
     smesh.position.set(b.x + 1.5, mg + 2 + 46 - FLAG_H * 0.32, b.y);
     smesh.frustumCulled = false;

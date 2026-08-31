@@ -21,6 +21,7 @@
 import * as THREE from 'three';
 import { GROUND } from '../../data/ground.js';
 import { onCompile, worldPosition } from './shader.js';
+import { toAlbedo } from './materials.js';
 import {
   WATER,
   FORD,
@@ -82,22 +83,43 @@ const FLAT = WATER | FORD | ROAD | BUILD | STONE | RUBBLE;
 
 const rgb = (r, g, b) => [r / 255, g / 255, b / 255];
 
+// The most any ground on this battlefield may reflect. Fresh snow is about
+// this; grass, soil, stone and roads are all far below it.
+const MAX_ALBEDO = 0.8;
+
 // One tone per surface. `null` means "whatever this battlefield's ground is",
 // so a road through the desert is sand-coloured and the same road through the
 // villages is mud.
+//
+// THESE ARE ALBEDOS, AND THEY HAVE TO BE HONEST ONES.
+//
+// Every one of these was between a half and three fifths — brighter than fresh
+// concrete, and in the case of a dirt track and a river ford brighter than
+// anything on a battlefield that is not snow. Under the old flat shading that
+// merely looked pale. Under a physical light, where a surface is lit by the sun
+// AND by the whole sky at once, ground that reflects sixty percent of what
+// lands on it runs off the top of the tone curve and comes out as blank white
+// paper with every bit of the grain worked into it lost — which is exactly what
+// a road, a ford, a village street and a stretch of shingle all looked like.
+//
+// Real ground is dark. Dry soil reflects about a fifth of the light on it,
+// weathered concrete about a quarter, dead grass about a quarter, and only snow
+// gets anywhere near a half. Set to that, the same sun that was blowing the
+// roads out leaves the fields properly lit and the roads a shade paler than the
+// fields — which is the whole of what a road looks like from the air.
 const TONE = {
-  water: rgb(44, 74, 85),
-  ford: rgb(150, 165, 140),
-  road: rgb(146, 130, 96),
-  stone: rgb(112, 108, 98),
-  wood: rgb(52, 66, 40),
-  crop: rgb(146, 136, 74),
-  marsh: rgb(66, 72, 52),
-  rock: rgb(108, 104, 96),
-  rubble: rgb(96, 90, 78),
-  build: rgb(104, 98, 88),
-  scorch: rgb(38, 34, 28),
-  cliff: rgb(96, 92, 84),
+  water: rgb(30, 52, 62),
+  ford: rgb(96, 106, 92),
+  road: rgb(98, 88, 66),
+  stone: rgb(84, 81, 74),
+  wood: rgb(44, 56, 34),
+  crop: rgb(118, 108, 62),
+  marsh: rgb(56, 62, 45),
+  rock: rgb(82, 79, 72),
+  rubble: rgb(76, 71, 61),
+  build: rgb(84, 79, 71),
+  scorch: rgb(30, 27, 22),
+  cliff: rgb(78, 75, 68),
 };
 
 const BITS = [
@@ -341,8 +363,26 @@ function groundShader(material) {
       + ( ifNoise( ifP * 0.088 ) - 0.5 ) * 0.22 * ifMid
       + ( ifNoise( ifP * 0.360 ) - 0.5 ) * 0.20 * ifFine;
     float ifWet = ifFbm( ifP * 0.011 + 41.0 );
-    vec3 ifTint = mix( vec3( 1.11, 0.99, 0.80 ), vec3( 0.86, 1.06, 0.86 ), ifWet );
+    // Dry ground is not YELLOW ground. At a fifth off the blue this pulled
+    // every surface on every map a long way toward sand — a pasture, a snow
+    // bank and a village street all came out the same warm beige, which is the
+    // other half of why the maps read as washed out. Dry is now close to
+    // neutral and only damp ground is pushed green, so what a surface is
+    // decides its colour and the weather only leans on it.
+    vec3 ifTint = mix( vec3( 1.05, 1.00, 0.92 ), vec3( 0.86, 1.06, 0.88 ), ifWet );
     diffuseColor.rgb *= ifTint * ( 1.0 + ifV * 0.55 );
+
+    // How WET it is. Damp ground and standing mud throw a sheen back at a low
+    // sun; dry stubble and dust throw none at all. Without this every field on
+    // every map has exactly one finish, which is the clearest single tell that
+    // separates ground from a painted board.
+    //
+    // It is done HERE rather than where roughness is first worked out, which
+    // would be the obvious place: that chunk runs before the normal is read at
+    // all, so ifP does not exist yet at that point in the shader. Anywhere
+    // after it and before the lighting gives the same answer.
+    float ifPuddle = smoothstep( 0.62, 0.86, ifFbm( ifP * 0.05 + 7.0 ) );
+    roughnessFactor = clamp( roughnessFactor - ifWet * 0.16 - ifPuddle * 0.44, 0.18, 1.0 );
 
     // Grass holds on a bank a great deal further than it looks as though it
     // should; rock only wins where the ground is genuinely steep. Set to break
@@ -522,6 +562,29 @@ export function buildTerrain(terrain, pal, landuse, map, split) {
     }
   }
 
+  // FROM WHAT IT LOOKS LIKE TO WHAT IT REFLECTS.
+  //
+  // Everything above — the palette, the surface tones, the tint of a snowbound
+  // bank, the shore — is written the way a colour is always written: a hex that
+  // looks right on a screen. A screen is not linear, so those numbers are not
+  // reflectances, and handing them to a physical light as though they were is
+  // what turned the fields pale and the roads to blank white paper. Converted
+  // once, here, at the end, after every blend that reads one of them: everything
+  // upstream stays in the space it was authored in and nothing has to be
+  // re-picked by hand. See materials.js for why there is a gain on it.
+  // NOTHING OUT-REFLECTS SNOW.
+  //
+  // A field's own colour is ADDED to the country's rather than mixed into it
+  // (see the parcels above), and on a map whose far bank is under snow the
+  // bank's tint is laid on top of that again — so a bright plot on high ground
+  // could finish above one, which is a surface returning more light than lands
+  // on it. Held to four fifths, which is about what fresh snow does and more
+  // than anything else on a battlefield ever will.
+  for (let i = 0; i < cellCol.length; i++) {
+    const a = toAlbedo(cellCol[i]);
+    cellCol[i] = a > MAX_ALBEDO ? MAX_ALBEDO : a;
+  }
+
   /* ---- the bed the mesh is draped over, and where it may hummock ---- */
   const bed = new Float32Array(n);
   const mask = new Float32Array(n);
@@ -618,16 +681,26 @@ export function buildTerrain(terrain, pal, landuse, map, split) {
       }
     }
     for (let v = 0; v < pos.count; v++) {
-      col[v * 3] *= shade[v];
-      col[v * 3 + 1] *= shade[v];
-      col[v * 3 + 2] *= shade[v];
+      for (let k = 0; k < 3; k++) {
+        const a = col[v * 3 + k] * shade[v];
+        col[v * 3 + k] = a > MAX_ALBEDO ? MAX_ALBEDO : a;
+      }
     }
   }
 
   geo.setAttribute('color', new THREE.BufferAttribute(col, 3));
   geo.computeVertexNormals();
 
-  const mat = new THREE.MeshLambertMaterial({ vertexColors: true });
+  // Physical rather than Lambert. Ground is not a flat diffuse sheet: a wet
+  // field throws a sheen back at a low sun and a dry one does not, and that one
+  // difference does more to make a landscape read as weather-worn than any
+  // amount of extra colour noise. See groundShader for where the roughness
+  // actually comes from.
+  const mat = new THREE.MeshStandardMaterial({
+    vertexColors: true,
+    roughness: 0.94,
+    metalness: 0,
+  });
   groundShader(mat);
   const mesh = new THREE.Mesh(geo, mat);
   mesh.receiveShadow = true;
@@ -739,7 +812,11 @@ function buildApron(geo, col, segX, segY, W, H) {
   g.setAttribute('color', new THREE.BufferAttribute(c, 3));
   g.setIndex(idx);
   g.computeVertexNormals();
-  const mat = new THREE.MeshLambertMaterial({ vertexColors: true });
+  const mat = new THREE.MeshStandardMaterial({
+    vertexColors: true,
+    roughness: 0.98,
+    metalness: 0,
+  });
   const mesh = new THREE.Mesh(g, mat);
   mesh.receiveShadow = false;
   mesh.castShadow = false;
@@ -771,12 +848,17 @@ export function buildWater(terrain, waterY) {
   // out per pixel, but the sheet still needs enough of it to be lit unevenly.
   const geo = new THREE.PlaneGeometry(terrain.W, terrain.H, 24, 16);
   geo.rotateX(-Math.PI / 2);
-  const mat = new THREE.MeshPhongMaterial({
-    color: 0x2f5a68,
-    specular: 0xbfd9e4,
-    shininess: 92,
+  // Physical, and very smooth. Phong could put a highlight on the water where
+  // the sun happened to be and nothing else; a physical surface with a low
+  // roughness reflects the whole SKY, so the river takes its colour from the
+  // weather over it and goes flat grey under cloud and blue at midday without
+  // being told to. The sun broken up on it is the ripple in waterShader.
+  const mat = new THREE.MeshStandardMaterial({
+    color: 0x1d3c48,
+    roughness: 0.08,
+    metalness: 0.12,
     transparent: true,
-    opacity: 0.86,
+    opacity: 0.9,
   });
   waterShader(mat);
   const mesh = new THREE.Mesh(geo, mat);
